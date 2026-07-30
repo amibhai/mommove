@@ -7,11 +7,13 @@ import {
   TRACKING_TICK_INTERVAL_SEC,
 } from '../config/reminderConfig';
 import { fireReminderNotification } from './notifications';
+import { checkForIgnoredReminder } from './reminderActions';
+import { checkReminderGate } from './reminderGating';
+import { resetSnoozeCount } from './reminderTriggerState';
 
 const HEADLESS_TASK_NAME = 'ScreenTimeTrackerTask';
 
-// [DEV LOG] Prefixed so it's easy to grep via `adb logcat | grep MomMove` and
-// easy to strip before Phase 3.
+// [DEV LOG] Prefixed so it's easy to grep via `adb logcat | grep MomMove`.
 const LOG_PREFIX = '[MomMove:tracker]';
 
 // Persists across repeated Headless task invocations because the JS engine
@@ -28,6 +30,8 @@ let lastTickAtMs: number | null = null;
  * task model cleanly.
  */
 async function tick(): Promise<void> {
+  await checkForIgnoredReminder();
+
   const now = Date.now();
   const elapsedSec = lastTickAtMs ? (now - lastTickAtMs) / 1000 : 0;
   lastTickAtMs = now;
@@ -59,12 +63,24 @@ async function tick(): Promise<void> {
 
   const thresholdSec = CONTINUOUS_TIME_THRESHOLD_MIN * 60;
   if (continuousTimeSec >= thresholdSec) {
-    console.log(
-      `${LOG_PREFIX} continuousTime reached ${CONTINUOUS_TIME_THRESHOLD_MIN}min threshold -> firing reminder notification`
-    );
-    await fireReminderNotification();
-    continuousTimeSec = 0;
-    ScreenTracker.setDebugContinuousTimeSec(0);
+    const gate = await checkReminderGate();
+    if (gate.suppressed) {
+      console.log(
+        `${LOG_PREFIX} threshold reached but suppressed (${gate.reason}) -> not firing, continuousTime holds at ${continuousTimeSec.toFixed(1)}s`
+      );
+    } else {
+      console.log(
+        `${LOG_PREFIX} continuousTime reached ${CONTINUOUS_TIME_THRESHOLD_MIN}min threshold -> firing reminder notification`
+      );
+      // A fresh cycle begins: wipe any leftover snooze count from a
+      // previous, never-resolved trigger. (The fired notification's
+      // identifier is captured by the "received" listener in
+      // reminderActions.ts once it's actually presented.)
+      resetSnoozeCount();
+      await fireReminderNotification({ snoozeCount: 0 });
+      continuousTimeSec = 0;
+      ScreenTracker.setDebugContinuousTimeSec(0);
+    }
   }
 }
 
@@ -95,7 +111,7 @@ export function stopScreenTimeTracking(): void {
  * temporary on-screen counter. Reads from native memory (mirrored every
  * tick) rather than the module-local variable above, since the Headless
  * task and the visible app UI are not guaranteed to share the same JS
- * context. Remove alongside the debug readout before Phase 3 if unneeded.
+ * context. Remove alongside the debug readout once a real UI replaces it.
  */
 export function getDebugContinuousTimeSec(): number {
   return ScreenTracker.getDebugContinuousTimeSec();
