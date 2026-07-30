@@ -1,0 +1,28 @@
+<manifest
+  xmlns:android="http://schemas.android.com/apk/res/android"
+  xmlns:tools="http://schemas.android.com/tools">
+
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
+  <!--
+    Usage Access is a "special app access" permission: it must be declared
+    here, but Android only grants it via the user manually flipping it on in
+    Settings.ACTION_USAGE_ACCESS_SETTINGS (see PermissionOnboardingScreen) —
+    there is no runtime permission dialog for it.
+  -->
+  <uses-permission
+    android:name="android.permission.PACKAGE_USAGE_STATS"
+    tools:ignore="ProtectedPermissions" />
+
+  <application>
+    <service
+      android:name="expo.modules.screentracker.ScreenTrackerService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="Continuous on-device screen-time reminder tracking" />
+    </service>
+  </application>
+</manifest>
