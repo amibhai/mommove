@@ -79,6 +79,33 @@ If you deny notifications, the app will keep tracking but the 30-minute
 reminder won't visibly appear — you can re-enable it later from Android's
 app-info screen for MomMove.
 
+## The reminder notification (Phase 3)
+
+The "Time to move" notification now has four buttons, all usable directly
+from the notification shade without opening the app:
+
+- **Done** — clears the reminder, resets the snooze count, marks it resolved.
+- **Snooze 5m** / **Snooze 30m** — clears it and reschedules a follow-up
+  after the chosen delay, incrementing an in-memory snooze count for this
+  trigger cycle.
+- **Skip** — clears it, resets the snooze count, marks it resolved.
+
+Snooze the same trigger 3 times in a row and the copy shifts from the
+casual "Time to move" to a more direct "Still there? Still haven't moved —
+even 30 seconds helps." The snooze count resets on Done/Skip, or whenever a
+fresh 30-minute cycle begins.
+
+Two things can silently suppress the reminder without resetting the
+continuous-time counter, so exactly one reminder fires the moment the
+suppression lifts instead of a pile of overdue ones:
+
+- **Quiet hours** — defaults to 8:00–21:00 local time (`DEFAULT_ACTIVE_HOURS_START`/`_END`
+  in `src/config/reminderConfig.ts`), persisted via AsyncStorage so a future
+  Settings screen (Phase 6) can make it user-adjustable.
+- **Pause Today** — a manual override that lasts until local midnight. No
+  real toggle exists yet (Phase 6), but there's a temporary **Pause Today**
+  button in the Phase 2/3 debug panel on the home screen for testing.
+
 ## On-device test protocol (Phase 2)
 
 Do this after installing the APK, ideally with the phone plugged in and
@@ -112,6 +139,51 @@ tracker log line is prefixed `[MomMove:tracker]`, and Headless JS
 If anything doesn't match, the `adb logcat` output is the fastest way to see
 exactly which branch of the state machine ran and why.
 
+## On-device test protocol (Phase 3)
+
+Continue from step 6 above — you should have a "Time to move" notification
+with four buttons: **Done**, **Snooze 5m**, **Snooze 30m**, **Skip**.
+`adb logcat | grep MomMove` will also show `[MomMove:actions]`-prefixed
+lines for everything below.
+
+1. **All four buttons, from the shade:** trigger a reminder, then, without
+   opening the app, pull down the notification shade and confirm all four
+   buttons are visible and tappable:
+   - **Done** — the notification clears; logcat shows
+     `onReminderResolved('done')`.
+   - **Skip** — same, but `onReminderResolved('skip')`.
+   - **Snooze 5m** / **Snooze 30m** — the notification clears immediately,
+     and a new one with the same buttons appears after the chosen delay.
+     Check the home screen's **DEBUG · snooze count** — it should read `1`
+     after one snooze.
+2. **Escalation on the 3rd snooze:** trigger a reminder and tap **Snooze
+   5m** three times in a row (waiting for each follow-up to reappear).
+   Confirm the 3rd notification's text has changed to **"Still there?" /
+   "Still haven't moved — even 30 seconds helps."**, and the debug snooze
+   count reads `3`.
+3. **Swipe-dismiss without tapping anything:** trigger a reminder, then
+   swipe it away from the shade instead of tapping a button. Within about
+   15 seconds (the tracker's tick interval), logcat should show
+   `reminder dismissed without an action -> ignored` and
+   `onReminderResolved('ignored')`.
+4. **Quiet hours suppress firing:** there's no settings UI yet, so simulate
+   this by checking the debug panel's **DEBUG · suppression** row — it
+   reads `none` inside the default 8:00–21:00 window. Testing the
+   suppressed case for real requires either waiting until outside that
+   window, or temporarily changing `DEFAULT_ACTIVE_HOURS_START`/`_END` in
+   `src/config/reminderConfig.ts` to bracket the current time and
+   reinstalling. Either way: confirm that once the debug counter reaches
+   `30:00`, **no notification appears**, logcat shows
+   `threshold reached but suppressed (quiet-hours) -> not firing`, and the
+   debug counter keeps counting up past `30:00` instead of resetting.
+5. **Pause Today suppresses firing:** on the home screen's debug panel, tap
+   **Pause Today**. Confirm **DEBUG · suppression** switches to
+   `paused-today`, and that no notification fires even once the counter
+   passes `30:00` (logcat: `threshold reached but suppressed (paused-today)`).
+   Tap the button again (now labeled "Paused today · tap to resume") to
+   turn it back off, and confirm the next threshold crossing fires
+   normally.
+
 ## Technical approach: why a custom native module
 
 Android will suspend or kill ordinary background JS within seconds to
@@ -144,36 +216,91 @@ may want per-app usage breakdowns (which *do* require Usage Access via
 associate with "screen time" apps. Flagging this so it's a known tradeoff,
 not a hidden one.
 
+## Notification actions: surviving a backgrounded or killed app
+
+This is the easy-to-get-wrong part of Phase 3, so here's exactly how it's
+wired (all in `src/services/reminderActions.ts`, registered once,
+unconditionally, in `index.ts` — never inside a component's `useEffect`,
+for the same reason `registerScreenTimeTrackerHeadlessTask` isn't: a button
+tap can cold-start the JS bundle with no `App` component ever mounting):
+
+1. All four actions are registered with `opensAppToForeground: false`, so
+   tapping one doesn't visibly launch MomMove. **Important nuance:**
+   expo-notifications' own docs note that with `opensAppToForeground: false`,
+   the plain `addNotificationResponseReceivedListener` event **will not
+   fire if the app process has actually been killed** — only when it's
+   alive (foregrounded or merely backgrounded). Missing this distinction is
+   the classic way to get this subtly wrong.
+2. Because `ScreenTrackerService` (Phase 2) keeps MomMove's process alive
+   as a foreground service for as long as tracking is on, the app is, in
+   practice, essentially never fully killed — so path 1 alone handles the
+   overwhelming majority of real taps.
+3. As a safety net for the cases where Android kills the process anyway
+   (some OEM battery managers override foreground services regardless), a
+   second path uses `expo-notifications`' `registerTaskAsync` +
+   `expo-task-manager`'s `defineTask` — this runs the JS bundle headlessly,
+   independent of any Activity, specifically to handle notification
+   responses when the app is otherwise fully terminated.
+
+Both paths call the same `processResponse()` function, de-duplicated via a
+`notificationId:actionIdentifier` key so a tap handled by both isn't
+processed twice.
+
+One more limitation worth stating plainly: expo-notifications doesn't wire
+up Android's `setDeleteIntent`, so there's no direct "user swiped this
+away" event from the library. Instead, `checkForIgnoredReminder()` (called
+every tracker tick) asks the native module whether the last-presented
+reminder's notification ID is still active (`NotificationManager
+.getActiveNotifications()`, no special permission required); if it's gone
+and nothing resolved it via an action, that's treated as `'ignored'`. This
+means ignored-detection has up to one tick's latency (~15s) rather than
+being instantaneous — an accepted tradeoff over the alternatives (forking
+expo-notifications' native code, or requesting the much heavier
+`NotificationListenerService` permission just to observe our own
+notification).
+
+## Where Phase 5 hooks in
+
+`onReminderResolved(resolution)` in `src/services/reminderActions.ts` is
+called for every `'done'`, `'skip'`, and `'ignored'` resolution — it's
+currently a `console.log` stub. Phase 5 replaces its body with a real
+SQLite write; no call sites need to change.
+
 ## Project structure
 
 ```
 App.tsx                        - app entry point, onboarding/home routing
-index.ts                       - registers the Headless JS tracking task
+index.ts                       - registers headless task + notification handling
 modules/screen-tracker/        - local native module: screen on/off signal,
-                                  foreground service, Usage Access helpers
+                                  foreground service, Usage Access helpers,
+                                  notification-presence check
 src/
   screens/                    - top-level screens (Home, PermissionOnboarding)
   components/                 - shared/reusable UI components
-  services/                   - screenTimeTracker, notifications
+  services/                   - screenTimeTracker, notifications, reminderActions,
+                                  reminderGating, reminderTriggerState, preferencesStore
   config/                     - reminderConfig.ts and other constants
   db/                         - local storage / database layer (not yet used)
 ```
 
 ## Project Status
 
-**Phase 2 — Core reminder engine.** Continuous screen-time tracking, the
-Usage Access onboarding flow, and a single plain "Time to move" notification
-at the 30-minute threshold. A temporary on-screen debug counter is included
-for on-device verification.
+**Phase 3 — Interactive reminders, quiet hours, pause.** The reminder
+notification now has Done / Snooze 5m / Snooze 30m / Skip actions that work
+from the notification shade even when the app is backgrounded or killed,
+with copy that escalates after 3 consecutive snoozes. Reminders are
+suppressed (without losing the continuous-time count) during quiet hours or
+a manual "Pause Today" override. The debug panel on the home screen now
+also shows the live snooze count and current suppression state, plus a
+temporary Pause Today button.
 
-Explicitly not in this phase: notification action buttons, message variety,
-SQLite logging, a Settings UI, quiet hours, or an update mechanism.
+Explicitly not in this phase: message pool/personalization/time-of-day copy
+variety, SQLite logging (the `onReminderResolved` stub is wired up and
+ready for it), a real Settings screen UI, and update mechanism changes.
 
 Planned next (later phases):
 
-- Notification actions (Done / Snooze / Skip)
-- Message variety and personalization
-- Local logging (SQLite)
-- Settings screen with adjustable thresholds
-- Quiet hours / active window logic
+- Message pool, personalization, and time-of-day copy variety
+- Local logging (SQLite) — wired into `onReminderResolved`
+- Settings screen UI (active hours, thresholds — logic/storage already in place)
 - An update mechanism (since the app isn't distributed via the Play Store)
