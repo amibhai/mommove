@@ -13,6 +13,8 @@ declare class ScreenTrackerModule extends NativeModule<{}> {
 
   setDebugContinuousTimeSec(seconds: number): void;
   getDebugContinuousTimeSec(): number;
+
+  isNotificationPresented(identifier: string): boolean;
 }
 
 export default requireNativeModule<ScreenTrackerModule>('ScreenTracker');

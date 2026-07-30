@@ -1,6 +1,7 @@
 package expo.modules.screentracker
 
 import android.app.AppOpsManager
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -64,6 +65,24 @@ class ScreenTrackerModule : Module() {
     Function("getDebugContinuousTimeSec") {
       ScreenStateHolder.debugContinuousTimeSec
     }
+
+    // --- Notification presence check (used for swipe-dismiss detection) ---
+    //
+    // expo-notifications doesn't wire up Android's setDeleteIntent, so JS
+    // has no direct "the user swiped this away" event. Instead it tracks the
+    // last-presented reminder's identifier and polls this on each tick: if
+    // the identifier is no longer among this app's active notifications, and
+    // no action was recorded for it, it's treated as ignored.
+
+    Function("isNotificationPresented") { identifier: String ->
+      isNotificationPresented(identifier)
+    }
+  }
+
+  private fun isNotificationPresented(identifier: String): Boolean {
+    val context = appContext.reactContext ?: return false
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    return manager.activeNotifications.any { it.tag == identifier }
   }
 
   private fun hasUsageAccessPermission(): Boolean {
