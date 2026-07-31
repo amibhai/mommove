@@ -6,10 +6,10 @@ import {
   CONTINUOUS_TIME_THRESHOLD_MIN,
   TRACKING_TICK_INTERVAL_SEC,
 } from '../config/reminderConfig';
-import { fireReminderNotification } from './notifications';
+import { fireReminderNotification, toneForFreshTrigger } from './notifications';
 import { checkForIgnoredReminder } from './reminderActions';
 import { checkReminderGate } from './reminderGating';
-import { resetSnoozeCount } from './reminderTriggerState';
+import { incrementTriggerCount, resetSnoozeCount } from './reminderTriggerState';
 
 const HEADLESS_TASK_NAME = 'ScreenTimeTrackerTask';
 
@@ -77,7 +77,8 @@ async function tick(): Promise<void> {
       // identifier is captured by the "received" listener in
       // reminderActions.ts once it's actually presented.)
       resetSnoozeCount();
-      await fireReminderNotification({ snoozeCount: 0 });
+      const triggerCount = incrementTriggerCount();
+      await fireReminderNotification({ tone: toneForFreshTrigger(triggerCount) });
       continuousTimeSec = 0;
       ScreenTracker.setDebugContinuousTimeSec(0);
     }

@@ -10,6 +10,7 @@ import {
   ACTION_SNOOZE_5,
   configureNotificationCategoriesAsync,
   fireReminderNotification,
+  toneForSnooze,
 } from './notifications';
 import {
   getPendingNotificationId,
@@ -17,6 +18,7 @@ import {
   resetSnoozeCount,
   setPendingNotificationId,
 } from './reminderTriggerState';
+import { recordDone, resetStreak } from './streakTracker';
 
 const LOG_PREFIX = '[MomMove:actions]';
 
@@ -25,18 +27,27 @@ const BACKGROUND_NOTIFICATION_TASK = 'MOMMOVE_BACKGROUND_NOTIFICATION_TASK';
 export type ReminderResolution = 'done' | 'skip' | 'ignored';
 
 /**
- * [STUB] Phase 5 will replace this with a real SQLite write logging every
- * resolution. This is the one function later phases hook into — don't
- * inline this logic elsewhere.
+ * Called for every resolved reminder. The streak bookkeeping below is a
+ * placeholder — Phase 5 will replace it with a real SQLite write/query,
+ * without needing to change any of this function's call sites.
  */
-export function onReminderResolved(resolution: ReminderResolution): void {
-  console.log(`${LOG_PREFIX} onReminderResolved('${resolution}') [stub — Phase 5 logs this]`);
+export async function onReminderResolved(resolution: ReminderResolution): Promise<void> {
+  console.log(`${LOG_PREFIX} onReminderResolved('${resolution}')`);
+
+  if (resolution === 'done') {
+    await recordDone();
+  } else {
+    await resetStreak();
+  }
 }
 
 async function handleSnooze(minutes: number): Promise<void> {
   const count = incrementSnoozeCount();
   console.log(`${LOG_PREFIX} snoozed ${minutes}m (snoozeCount=${count})`);
-  const id = await fireReminderNotification({ delaySeconds: minutes * 60, snoozeCount: count });
+  const id = await fireReminderNotification({
+    delaySeconds: minutes * 60,
+    tone: toneForSnooze(count),
+  });
   // The follow-up notification isn't visible yet (it's delayed) — the
   // "received" listener below marks it pending once it's actually shown.
   setPendingNotificationId(id);
@@ -64,7 +75,7 @@ async function processResponse(
   switch (actionIdentifier) {
     case ACTION_DONE:
       resetSnoozeCount();
-      onReminderResolved('done');
+      await onReminderResolved('done');
       break;
     case ACTION_SNOOZE_5:
       await handleSnooze(SNOOZE_5_MIN);
@@ -74,7 +85,7 @@ async function processResponse(
       break;
     case ACTION_SKIP:
       resetSnoozeCount();
-      onReminderResolved('skip');
+      await onReminderResolved('skip');
       break;
     default:
       // Notifications.DEFAULT_ACTION_IDENTIFIER (the notification body was
@@ -155,6 +166,6 @@ export async function checkForIgnoredReminder(): Promise<void> {
   if (!stillPresented) {
     setPendingNotificationId(null);
     console.log(`${LOG_PREFIX} reminder dismissed without an action -> ignored`);
-    onReminderResolved('ignored');
+    await onReminderResolved('ignored');
   }
 }
