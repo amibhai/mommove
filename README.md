@@ -137,17 +137,95 @@ exists yet to change it (Phase 6) — the debug panel has a temporary
 "Name: … · tap to switch" button that toggles a test name, to confirm
 substitution works without needing that UI.
 
-## In-app streak reinforcement (Phase 4)
+## In-app streak reinforcement (Phase 4, streak now DB-derived since Phase 5)
 
-A consecutive-"Done" streak is tracked in AsyncStorage
-(`src/services/streakTracker.ts` — a placeholder Phase 5 will migrate to a
-real query against logged actions). It increments on `onReminderResolved('done')`
-and resets to 0 on `'skip'` or `'ignored'`.
+Hitting 3, 5, or 10 consecutive "Done" resolutions queues a small **in-app**
+banner (never a push notification) — shown once, the next time the app is
+opened, via `ReinforcementBanner` on the home screen, then auto-hides after
+a few seconds. `src/services/streakTracker.ts` only queues that one-time
+"show a banner" flag now — the streak *count* itself is computed live from
+`reminder_logs` (see Phase 5 below), not separately maintained.
 
-Hitting 3, 5, or 10 in a row queues a small **in-app** banner (never a push
-notification) — shown once, the next time the app is opened, via
-`ReinforcementBanner` on the home screen, then auto-hides after a few
-seconds.
+## Local logging and Summary screen (Phase 5)
+
+Every resolved reminder (done/skip/ignored — never individual snooze taps)
+now writes one row to a local SQLite database, via `src/db/database.ts`.
+**All SQL lives in that one file** — nothing else touches `expo-sqlite`
+directly.
+
+```sql
+CREATE TABLE reminder_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,           -- ISO 8601, when it resolved
+    trigger_type TEXT NOT NULL,        -- '30min_continuous_use' for now
+    action_taken TEXT NOT NULL,        -- 'done' | 'skipped' | 'ignored'
+    snooze_count INTEGER DEFAULT 0,    -- snoozes on this trigger before it resolved
+    response_time_sec INTEGER,         -- original fire -> final resolution
+    session_duration_min INTEGER,      -- continuous time that caused the trigger
+    message_id TEXT                    -- which message pool entry was last shown
+);
+CREATE TABLE reminder_logs_weekly_rollup (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    week_start_date TEXT NOT NULL,     -- Monday of that week
+    done_count INTEGER DEFAULT 0,
+    snoozed_count INTEGER DEFAULT 0,
+    skipped_count INTEGER DEFAULT 0,
+    ignored_count INTEGER DEFAULT 0
+);
+```
+
+A few judgment calls worth knowing about:
+
+- **`action_taken` never actually stores `'snoozed'`** — a trigger only
+  gets logged once, when it *finally* resolves via done/skip/ignored, so
+  "snoozed" isn't a terminal state. Instead, both the Summary screen's "Z
+  snoozed" figure and the rollup's `snoozed_count` mean *"this resolved
+  reminder was snoozed at least once along the way"* (`snooze_count > 0`),
+  which can overlap with done/skipped/ignored rather than being a fourth
+  mutually-exclusive bucket.
+- **`response_time_sec`** measures from the trigger's *original* fire (the
+  fresh 30-minute notification) to the final resolving action — so it
+  includes any time spent snoozed, not just the time since the last
+  follow-up notification.
+- **`message_id`** records whichever message was on screen *at the moment
+  of resolution* — the last one shown, if she snoozed through a few
+  different ones first.
+
+**Streak calculation** (`getCurrentDoneStreak()` in `database.ts`) reads the
+most recent rows ordered by `timestamp DESC` and counts consecutive
+`action_taken = 'done'` rows, stopping at the first row that isn't:
+
+```sql
+SELECT action_taken FROM reminder_logs ORDER BY timestamp DESC, id DESC LIMIT 200
+```
+```ts
+let streak = 0;
+for (const row of rows) {
+  if (row.action_taken !== 'done') break;
+  streak += 1;
+}
+```
+
+**Pruning:** on every app launch, `pruneOldLogs()` runs as a fire-and-forget
+check (never blocking startup). Rows older than 90 days are aggregated into
+`reminder_logs_weekly_rollup` (accumulating into an existing week's row if
+one's already there — safe, since a row is only ever read and deleted
+once) and then deleted from `reminder_logs`.
+
+**Summary screen** (`src/screens/SummaryScreen.tsx`) — reachable via the
+**"View Summary"** button on the home screen:
+- **Today:** "X reminders • Y done • Z snoozed • W skipped" (plus an
+  ignored count if non-zero), large text.
+- **This week:** a 7-day done-count bar row (plain styled `View`s, no
+  charting library), pulled straight from `reminder_logs`.
+- **Older weeks:** if any weeks have been rolled up (only possible after
+  90+ days of use), they're listed below, pulled from
+  `reminder_logs_weekly_rollup` — so the view stays meaningful even after
+  pruning.
+- **Export Logs (CSV):** queries every `reminder_logs` row, builds a CSV
+  in memory, writes it to a temp file (`expo-file-system`'s `File` API),
+  and opens the native share sheet (`expo-sharing`). Deliberately a plain
+  "utility" button — this is for your own review, not something she needs.
 
 ## On-device test protocol (Phase 2)
 
@@ -253,6 +331,35 @@ lines for everything below.
    row today 💪"** appears briefly on the home screen. Tap **Simulate
    Skip** and confirm **DEBUG · streak** drops back to `0`.
 
+## On-device test protocol (Phase 5)
+
+1. **Real rows land correctly:** resolve a few real reminders — one Done,
+   one Skip, one Snooze-then-Done, one ignored (swipe-dismiss). On the home
+   screen's debug panel, tap **"Dump recent logs (console)"** and check
+   `adb logcat | grep MomMove` for the printed rows. Confirm: `action_taken`
+   matches what you did, `snooze_count` reflects how many times you
+   snoozed that particular trigger, `response_time_sec` and
+   `session_duration_min` are populated with plausible numbers, and
+   `message_id` matches an id from `src/config/messagePool.ts`.
+2. **Fake entries + Summary screen:** tap **"Log 10 fake entries"** a
+   couple of times, then tap **View Summary**. Confirm **Today** and **This
+   week** counts increased sensibly (compare against the console log of
+   what was inserted).
+3. **Streak banner from real query data:** use **Simulate Done** on the
+   debug panel to cross a streak of exactly 3, fully close and reopen the
+   app, and confirm the reinforcement banner appears — this streak comes
+   from `getCurrentDoneStreak()` querying the *actual* `reminder_logs`
+   table (which by now also contains your fake entries and earlier test
+   resolutions), not a separate counter. Repeat to cross 5.
+4. **CSV export:** on the Summary screen, tap **Export Logs (CSV)**.
+   Confirm the native share sheet opens; save or send the file somewhere
+   you can open it, and confirm it's a valid CSV with a header row and one
+   line per logged reminder.
+5. **Force prune check:** tap **"Force prune check"** on the debug panel.
+   Confirm no error appears in logcat, and (since nothing is 90 days old
+   yet) it reports `pruned=0 rolledUpWeeks=0` — i.e. it correctly does
+   nothing rather than erroring or deleting anything unexpected.
+
 ## Technical approach: why a custom native module
 
 Android will suspend or kill ordinary background JS within seconds to
@@ -328,53 +435,57 @@ expo-notifications' native code, or requesting the much heavier
 `NotificationListenerService` permission just to observe our own
 notification).
 
-## Where Phase 5 hooks in
+## Where Phase 6 hooks in
 
-`onReminderResolved(resolution)` in `src/services/reminderActions.ts` is
-called for every `'done'`, `'skip'`, and `'ignored'` resolution — it logs,
-and (as of Phase 4) updates the AsyncStorage-backed streak in
-`src/services/streakTracker.ts`. Phase 5 replaces the streak's storage with
-a real SQLite write/query; `onReminderResolved`'s call sites don't need to
-change. Similarly, `getUserName`/`setUserName` and `getActiveHours`/
-`setActiveHours` (`src/services/preferencesStore.ts`) are exactly where
-Phase 6's Settings screen should read from and write to.
+`onReminderResolved(resolution)` in `src/services/reminderActions.ts` now
+writes a real `reminder_logs` row and computes the live streak — nothing
+further needs to change there. What's still a placeholder for Phase 6's
+Settings screen: `getUserName`/`setUserName` and `getActiveHours`/
+`setActiveHours` (`src/services/preferencesStore.ts`) are exactly where a
+name field and active-hours pickers should read from and write to. The
+**Summary screen** is currently reached only via a **"View Summary"**
+button on the home screen (`App.tsx` holds a simple `'home' | 'summary'`
+view state — no navigation library is installed); Phase 6 can decide
+whether Summary/Export moves into a proper Settings/navigation structure
+or stays where it is.
 
 ## Project structure
 
 ```
-App.tsx                        - app entry point, onboarding/home routing
+App.tsx                        - app entry point, onboarding/home/summary routing
 index.ts                       - registers headless task + notification handling
 modules/screen-tracker/        - local native module: screen on/off signal,
                                   foreground service, Usage Access helpers,
                                   notification-presence check
 src/
-  screens/                    - top-level screens (Home, PermissionOnboarding)
+  screens/                    - Home, PermissionOnboarding, Summary
   components/                 - ReinforcementBanner and other shared UI
   services/                   - screenTimeTracker, notifications, reminderActions,
                                   reminderGating, reminderTriggerState,
-                                  preferencesStore, messageSelector, streakTracker
+                                  preferencesStore, messageSelector, streakTracker,
+                                  csvExport
   config/                     - reminderConfig.ts, messagePool.ts
-  db/                         - local storage / database layer (not yet used)
+  db/                         - database.ts (all SQL lives here)
 ```
 
 ## Project Status
 
-**Phase 4 — Message pool and personalization.** Notifications now pull from
-a 34-message pool (English + Hindi/Hinglish, mixed Devanagari and Roman
-script) instead of one static line, filtered by tone and time of day,
-never immediately repeating, personalized with a name that defaults to
-"Mummy". The Phase 3 snooze-escalation path now pulls from the pool's
-`direct` tone instead of a hardcoded string. A small in-app (not push)
-banner celebrates 3/5/10-in-a-row "Done" streaks. The debug panel gained a
-last-selected-message readout, streak count, a manual test-notification
-button, and Simulate Done/Skip buttons.
+**Phase 5 — Local logging, streaks, and a Summary screen.** Every resolved
+reminder now writes a row to a local SQLite database (`src/db/database.ts`)
+instead of the Phase 3 stub / Phase 4 AsyncStorage placeholder. The
+consecutive-"Done" streak is now computed live from that data. A new
+Summary screen (reachable from the home screen) shows today's counts and a
+7-day bar view, with CSV export via the share sheet. Logs older than 90
+days are rolled up into weekly aggregates and pruned automatically, checked
+once per app launch without blocking startup. The debug panel gained
+"Log 10 fake entries", "Force prune check", and "Dump recent logs" buttons.
 
-Explicitly not in this phase: SQLite logging (the streak counter is an
-AsyncStorage placeholder Phase 5 will migrate), a real Settings screen UI,
-and update mechanism changes.
+Explicitly not in this phase: a real Settings screen UI (Summary/Export
+access via a home-screen button is the stand-in for now), and update
+mechanism changes.
 
 Planned next (later phases):
 
-- Local logging (SQLite) — wired into `onReminderResolved` and the streak counter
 - Settings screen UI (name, active hours, thresholds — logic/storage already in place)
+- Final navigation structure for Summary/Export
 - An update mechanism (since the app isn't distributed via the Play Store)
