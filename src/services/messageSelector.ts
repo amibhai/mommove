@@ -8,6 +8,10 @@ let recentlyUsedIds: string[] = [];
 // on-device verification without waiting for a real 30-minute trigger.
 let lastSelectedMessage: string | null = null;
 
+// Read by notifications.ts right after selectMessage() to record which
+// pool entry was shown, for the eventual reminder_logs.message_id column.
+let lastSelectedMessageId: string | null = null;
+
 export function getCurrentTimeOfDay(): MessageTimeOfDay {
   const hour = new Date().getHours();
   if (hour < 12) return 'morning';
@@ -44,9 +48,14 @@ export function selectMessage(tone: MessageTone, timeOfDay: MessageTimeOfDay, na
 
   const text = chosen.template.replace('{name}', name);
   lastSelectedMessage = text;
+  lastSelectedMessageId = chosen.id;
   return text;
 }
 
 export function getLastSelectedMessage(): string | null {
   return lastSelectedMessage;
+}
+
+export function getLastSelectedMessageId(): string | null {
+  return lastSelectedMessageId;
 }

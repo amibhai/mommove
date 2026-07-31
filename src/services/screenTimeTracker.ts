@@ -9,7 +9,7 @@ import {
 import { fireReminderNotification, toneForFreshTrigger } from './notifications';
 import { checkForIgnoredReminder } from './reminderActions';
 import { checkReminderGate } from './reminderGating';
-import { incrementTriggerCount, resetSnoozeCount } from './reminderTriggerState';
+import { incrementTriggerCount, markTriggerFired, resetSnoozeCount } from './reminderTriggerState';
 
 const HEADLESS_TASK_NAME = 'ScreenTimeTrackerTask';
 
@@ -78,6 +78,10 @@ async function tick(): Promise<void> {
       // reminderActions.ts once it's actually presented.)
       resetSnoozeCount();
       const triggerCount = incrementTriggerCount();
+      // Captured once, here, for the eventual log row — session_duration_min
+      // describes what caused this trigger, so it must be read before the
+      // reset below, and shouldn't change across any later snoozes.
+      markTriggerFired(Math.round(continuousTimeSec / 60));
       await fireReminderNotification({ tone: toneForFreshTrigger(triggerCount) });
       continuousTimeSec = 0;
       ScreenTracker.setDebugContinuousTimeSec(0);

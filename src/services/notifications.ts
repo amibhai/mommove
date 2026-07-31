@@ -5,8 +5,9 @@ import {
   SNOOZE_ESCALATION_THRESHOLD,
   WARM_VARIETY_EVERY_N_TRIGGERS,
 } from '../config/reminderConfig';
-import { getCurrentTimeOfDay, selectMessage } from './messageSelector';
+import { getCurrentTimeOfDay, getLastSelectedMessageId, selectMessage } from './messageSelector';
 import { getUserName } from './preferencesStore';
+import { setLastShownMessageId } from './reminderTriggerState';
 
 // Show the notification banner even while MomMove itself happens to be in
 // the foreground (rare in practice, since the reminder fires while she's
@@ -109,6 +110,9 @@ export async function fireReminderNotification(options: FireReminderOptions): Pr
   const { tone, delaySeconds } = options;
   const name = await getUserName();
   const body = selectMessage(tone, getCurrentTimeOfDay(), name);
+  // Recorded regardless of fresh-fire vs. snooze, so it always reflects
+  // whichever message was actually on screen at the time of resolution.
+  setLastShownMessageId(getLastSelectedMessageId());
 
   return Notifications.scheduleNotificationAsync({
     content: {
