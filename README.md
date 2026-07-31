@@ -100,11 +100,10 @@ continuous-time counter, so exactly one reminder fires the moment the
 suppression lifts instead of a pile of overdue ones:
 
 - **Quiet hours** — defaults to 8:00–21:00 local time (`DEFAULT_ACTIVE_HOURS_START`/`_END`
-  in `src/config/reminderConfig.ts`), persisted via AsyncStorage so a future
-  Settings screen (Phase 6) can make it user-adjustable.
-- **Pause Today** — a manual override that lasts until local midnight. No
-  real toggle exists yet (Phase 6), but there's a temporary **Pause Today**
-  button in the Phase 2/3 debug panel on the home screen for testing.
+  in `src/config/reminderConfig.ts`), persisted via AsyncStorage and
+  adjustable from the **Settings** tab since Phase 6.
+- **Pause Today** — a manual override that lasts until local midnight,
+  adjustable from **Settings** since Phase 6.
 
 ## Message pool and personalization (Phase 4)
 
@@ -132,10 +131,8 @@ Which tone gets used, and where:
 
 **Name personalization:** `getUserName()` / `setUserName()` in
 `src/services/preferencesStore.ts` (same AsyncStorage pattern as Phase 3's
-quiet-hours values), defaulting to `"Mummy"` if never set. No Settings UI
-exists yet to change it (Phase 6) — the debug panel has a temporary
-"Name: … · tap to switch" button that toggles a test name, to confirm
-substitution works without needing that UI.
+quiet-hours values), defaulting to `"Mummy"` if never set. Adjustable from
+a real text field on the **Settings** tab since Phase 6.
 
 ## In-app streak reinforcement (Phase 4, streak now DB-derived since Phase 5)
 
@@ -212,8 +209,8 @@ check (never blocking startup). Rows older than 90 days are aggregated into
 one's already there — safe, since a row is only ever read and deleted
 once) and then deleted from `reminder_logs`.
 
-**Summary screen** (`src/screens/SummaryScreen.tsx`) — reachable via the
-**"View Summary"** button on the home screen:
+**Summary screen** (`src/screens/SummaryScreen.tsx`) — the **Summary** tab
+(real bottom-tab navigation since Phase 6):
 - **Today:** "X reminders • Y done • Z snoozed • W skipped" (plus an
   ignored count if non-zero), large text.
 - **This week:** a 7-day done-count bar row (plain styled `View`s, no
@@ -226,6 +223,98 @@ once) and then deleted from `reminder_logs`.
   in memory, writes it to a temp file (`expo-file-system`'s `File` API),
   and opens the native share sheet (`expo-sharing`). Deliberately a plain
   "utility" button — this is for your own review, not something she needs.
+
+## Real navigation and Settings (Phase 6)
+
+MomMove now has real navigation (`@react-navigation/native` +
+`@react-navigation/bottom-tabs`) with three always-visible bottom tabs —
+**Home**, **Summary**, **Settings** — each shown with an emoji icon *and* a
+text label (no icon-only controls). The Phase 2 Usage Access onboarding
+screen still gates all of this — it's shown standalone, before the tab
+navigator ever mounts, exactly as before.
+
+**Home** is now a real landing screen: just the "MomMove" title and a
+status pill — "Tracking active" (green) normally, or a warning ("turn
+notifications on in Android Settings") if notification permission gets
+revoked after the fact. All of the old debug buttons/readouts have moved
+out of it entirely.
+
+**Settings** (`src/screens/SettingsScreen.tsx`) is the new real, user-facing
+screen. Every control saves immediately on change — there's no separate
+"Save" button, since that would just be an extra tap for no real benefit:
+- **Reminder timing** — "Remind me after" (15–60 min) and "Break needs to
+  last at least" (1–5 min), using a new reusable `Stepper` component
+  (large −/+ buttons) rather than a slider or a native date/time picker —
+  no new native dependency, and big discrete taps are easier than
+  precision-dragging for this user. Saving calls
+  `screenTimeTracker.refreshTrackerConfig()` (see below) so the change
+  takes effect immediately.
+- **Active hours** — Start/End, also `Stepper`s (0–23, wrapping), same
+  `getActiveHours`/`setActiveHours` from Phase 3.
+- **Pause today** — a real `Switch` labeled "Pause reminders for today",
+  showing "Active" or "Paused until midnight".
+- **Personalization** — a real text field for her display name (still
+  defaulting to "Mummy"), saved on blur.
+- **Notification style** — Sound and Vibration `Switch`es (new), wired into
+  an actual Android notification channel — see below.
+- **About** — the app version number. Tapping it 5× within ~2 seconds
+  reveals **Developer Tools** (`src/components/DeveloperToolsPanel.tsx`):
+  every debug tool from Phases 2–5 (Fire test notification, Simulate
+  Done/Skip, Log 10 fake entries, Force prune check, Dump recent logs, plus
+  the live continuous-time/snooze/suppression/streak readouts), carried
+  over as a full superset rather than trimmed down, since later phases
+  still need them for testing.
+
+### The tracker's threshold/gap are no longer hardcoded
+
+`CONTINUOUS_TIME_THRESHOLD_MIN`/`BREAK_RESET_GAP_MIN` in
+`reminderConfig.ts` are now only the *default* for a never-configured
+install. The real, current values are read through
+`preferencesStore.getReminderTiming()`/`setReminderTiming()`.
+
+The tricky part: `screenTimeTracker.ts`'s `tick()` runs every 15 seconds as
+a Headless JS task — it must never `await` AsyncStorage on that hot path.
+So the threshold/gap are cached in two module-level variables that `tick()`
+reads synchronously, refreshed in exactly two places:
+1. `startScreenTimeTracking()` — fire-and-forget reload every time tracking
+   (re)starts (app launch).
+2. `refreshTrackerConfig()` (exported) — called by the Settings screen
+   immediately after `setReminderTiming()`, so a change takes effect on the
+   very next tick instead of waiting for a restart.
+
+**Tradeoff:** there's a small, one-time window (well under a second, right
+after launch) where the first tick or two could still see the previous
+cached values while the async reload resolves — harmless in practice
+(worst case, one tick uses a stale threshold), and far simpler than making
+the whole startup path async just to close a gap that small. This is the
+"safe bridging approach" — re-reading config at (re)start plus an explicit
+refresh hook, rather than polling storage continuously from inside the
+15-second hot loop.
+
+### Notification sound/vibration — an Android channel gotcha
+
+Android **locks a notification channel's sound and vibration once it's
+created** — per expo-notifications' own docs, "after a channel has been
+created, you can modify only its name and description." So toggling Sound
+or Vibration in Settings calls
+`notifications.configureReminderNotificationChannelAsync()`, which
+**deletes and recreates** a dedicated `mommove-reminders` channel (distinct
+from expo-notifications' own default channel and from the native
+foreground service's own silent channel) with the current preference.
+`fireReminderNotification` passes this channel id explicitly — one extra
+wrinkle here: expo-notifications' `channelId` field lives on the
+**`trigger`** object, not `content`, so even an "immediate" notification
+must use `trigger: { channelId }` rather than a bare `trigger: null` for
+the channel (and its sound/vibration) to actually apply.
+
+## On-device test protocols (Phases 2–6)
+
+> **Note:** every `DEBUG · ...` readout and debug button referenced in the
+> Phase 2–5 protocols below used to live directly on the Home screen. As of
+> Phase 6 they've all moved to **Settings → tap the version number 5× →
+> Developer Tools**. Wherever you read "the home screen's debug panel"
+> below, read "Developer Tools" instead — the readouts and buttons
+> themselves are unchanged, just relocated.
 
 ## On-device test protocol (Phase 2)
 
@@ -342,9 +431,9 @@ lines for everything below.
    `session_duration_min` are populated with plausible numbers, and
    `message_id` matches an id from `src/config/messagePool.ts`.
 2. **Fake entries + Summary screen:** tap **"Log 10 fake entries"** a
-   couple of times, then tap **View Summary**. Confirm **Today** and **This
-   week** counts increased sensibly (compare against the console log of
-   what was inserted).
+   couple of times, then open the **Summary** tab. Confirm **Today** and
+   **This week** counts increased sensibly (compare against the console log
+   of what was inserted).
 3. **Streak banner from real query data:** use **Simulate Done** on the
    debug panel to cross a streak of exactly 3, fully close and reopen the
    app, and confirm the reinforcement banner appears — this streak comes
@@ -359,6 +448,35 @@ lines for everything below.
    Confirm no error appears in logcat, and (since nothing is 90 days old
    yet) it reports `pruned=0 rolledUpWeeks=0` — i.e. it correctly does
    nothing rather than erroring or deleting anything unexpected.
+
+## On-device test protocol (Phase 6)
+
+1. **Tab navigation + persistence:** switch between **Home**, **Summary**,
+   and **Settings** a few times. On Settings, change a couple of values
+   (e.g. active hours, sound toggle), switch to another tab, then back to
+   Settings — confirm it shows what you just saved, not the defaults.
+2. **Dynamic threshold takes effect:** on Settings, set "Remind me after"
+   down to its minimum (15 min, or lower the range temporarily in
+   `reminderConfig.ts` for a faster test — 2 min is easiest via a quick
+   code edit if you want a very fast loop). Use the phone continuously and
+   confirm logcat shows `config loaded: threshold=Xmin` after you save, and
+   that the reminder actually fires at the new interval, not 30 minutes.
+3. **Sound/vibration toggle:** turn **Notification sound** off in Settings,
+   then use Developer Tools' **Fire test notification**. Confirm it arrives
+   silently (and with vibration still on, if you left that on). Toggle
+   **Vibration** off too and confirm the next one is silent *and* doesn't
+   vibrate.
+4. **Developer Tools reveal:** on Settings, tap the version number at the
+   bottom 5 times quickly (within ~2 seconds). Confirm the **Developer
+   Tools** section appears, and that every button/readout in it still
+   works exactly as it did before (Fire test notification, Simulate
+   Done/Skip, Log 10 fake entries, Force prune check, Dump recent logs,
+   continuous-time/snooze/suppression/streak readouts).
+5. **System font scaling:** in Android's own Settings → Display → Font
+   size, pick the largest option, then reopen MomMove. Confirm text on
+   Home, Summary, and Settings grows accordingly without clipping,
+   overlapping, or breaking the layout (scrolling further if needed is
+   fine — clipped/cut-off text is not).
 
 ## Technical approach: why a custom native module
 
@@ -435,31 +553,33 @@ expo-notifications' native code, or requesting the much heavier
 `NotificationListenerService` permission just to observe our own
 notification).
 
-## Where Phase 6 hooks in
+## Where Phase 7 hooks in
 
-`onReminderResolved(resolution)` in `src/services/reminderActions.ts` now
-writes a real `reminder_logs` row and computes the live streak — nothing
-further needs to change there. What's still a placeholder for Phase 6's
-Settings screen: `getUserName`/`setUserName` and `getActiveHours`/
-`setActiveHours` (`src/services/preferencesStore.ts`) are exactly where a
-name field and active-hours pickers should read from and write to. The
-**Summary screen** is currently reached only via a **"View Summary"**
-button on the home screen (`App.tsx` holds a simple `'home' | 'summary'`
-view state — no navigation library is installed); Phase 6 can decide
-whether Summary/Export moves into a proper Settings/navigation structure
-or stays where it is.
+Every user-adjustable value now has a real, storage-backed home:
+`getReminderTiming`/`setReminderTiming`, `getActiveHours`/`setActiveHours`,
+`getUserName`/`setUserName`, `getIsPausedToday`/`setPauseToday`, and
+`getNotificationStyle`/`setNotificationStyle` (all in
+`src/services/preferencesStore.ts`) are the complete set of knobs a future
+phase can read from or extend. `onReminderResolved(resolution)` in
+`reminderActions.ts` still writes the real `reminder_logs` row and computes
+the live streak — unchanged this phase. Navigation is a plain
+`@react-navigation/native` bottom-tab tree in `App.tsx` (Home / Summary /
+Settings), with the Usage Access onboarding gate still standing outside of
+it — any future screen just needs a new `Tab.Screen` entry.
 
 ## Project structure
 
 ```
-App.tsx                        - app entry point, onboarding/home/summary routing
-index.ts                       - registers headless task + notification handling
+App.tsx                        - app entry point: onboarding gate, then the
+                                  Home/Summary/Settings bottom-tab navigator
+index.ts                       - registers headless task, notification handling,
+                                  and the reminder notification channel
 modules/screen-tracker/        - local native module: screen on/off signal,
                                   foreground service, Usage Access helpers,
                                   notification-presence check
 src/
-  screens/                    - Home, PermissionOnboarding, Summary
-  components/                 - ReinforcementBanner and other shared UI
+  screens/                    - Home, PermissionOnboarding, Summary, Settings
+  components/                 - Stepper, DeveloperToolsPanel, ReinforcementBanner
   services/                   - screenTimeTracker, notifications, reminderActions,
                                   reminderGating, reminderTriggerState,
                                   preferencesStore, messageSelector, streakTracker,
@@ -470,22 +590,21 @@ src/
 
 ## Project Status
 
-**Phase 5 — Local logging, streaks, and a Summary screen.** Every resolved
-reminder now writes a row to a local SQLite database (`src/db/database.ts`)
-instead of the Phase 3 stub / Phase 4 AsyncStorage placeholder. The
-consecutive-"Done" streak is now computed live from that data. A new
-Summary screen (reachable from the home screen) shows today's counts and a
-7-day bar view, with CSV export via the share sheet. Logs older than 90
-days are rolled up into weekly aggregates and pruned automatically, checked
-once per app launch without blocking startup. The debug panel gained
-"Log 10 fake entries", "Force prune check", and "Dump recent logs" buttons.
+**Phase 6 — Real navigation and Settings.** MomMove now has a real
+bottom-tab navigator (Home / Summary / Settings) instead of ad-hoc local
+state, and a real Settings screen exposing every previously debug-only
+value: reminder timing (now genuinely adjustable, not hardcoded), active
+hours, pause-today, display name, and new sound/vibration toggles wired
+into an actual Android notification channel. All prior debug tools moved
+into a single hidden "Developer Tools" panel (reveal: tap the version
+number 5× on Settings). An accessibility pass applied 16px+ body text,
+20px+ headers, 44×44dp touch targets, and text-labeled (not icon-only)
+controls across Home, Summary, and Settings.
 
-Explicitly not in this phase: a real Settings screen UI (Summary/Export
-access via a home-screen button is the stand-in for now), and update
-mechanism changes.
+Explicitly not in this phase: update mechanism changes, and any visual/copy
+polish beyond functional accessibility.
 
 Planned next (later phases):
 
-- Settings screen UI (name, active hours, thresholds — logic/storage already in place)
-- Final navigation structure for Summary/Export
 - An update mechanism (since the app isn't distributed via the Play Store)
+- Visual/copy polish pass
