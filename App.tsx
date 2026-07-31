@@ -13,6 +13,7 @@ import SummaryScreen from './src/screens/SummaryScreen';
 import { requestNotificationPermission } from './src/services/notifications';
 import { getIsPausedToday } from './src/services/preferencesStore';
 import { startScreenTimeTracking } from './src/services/screenTimeTracker';
+import { checkForUpdate } from './src/services/updateChecker';
 
 type Stage = 'onboarding' | 'ready';
 
@@ -66,6 +67,18 @@ export default function App() {
       .catch((err) => {
         console.log(`[MomMove:db] prune check failed: ${err}`);
       });
+  }, []);
+
+  useEffect(() => {
+    // Also fire-and-forget: checkForUpdate() never throws (see
+    // updateChecker.ts), so no .catch is needed here — a failed/offline
+    // fetch just resolves to 'check-failed' and the launch continues
+    // exactly as if this effect didn't run.
+    checkForUpdate().then((result) => {
+      if (result.status === 'update-available') {
+        console.log(`[MomMove:updateChecker] update available: v${result.latestVersion}`);
+      }
+    });
   }, []);
 
   const handlePermissionGranted = useCallback(async () => {
