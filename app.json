@@ -22,6 +22,15 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "url": "REPLACE_ME_RUN_EAS_UPDATE_CONFIGURE"
+    },
     "plugins": [
       [
         "expo-notifications",
