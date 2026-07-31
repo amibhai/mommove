@@ -3,35 +3,22 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STREAK_REINFORCEMENT_MILESTONES } from '../config/reminderConfig';
 
 const KEYS = {
-  streak: '@mommove/doneStreak',
   // Holds the milestone number once it's been hit but not yet shown to
   // her — cleared the next time the app is opened and consumes it.
   pendingReinforcement: '@mommove/pendingReinforcementStreak',
 } as const;
 
 /**
- * [PLACEHOLDER] AsyncStorage is a stand-in for Phase 5's real SQLite-backed
- * streak query — this module is the one place that logic will move to, so
- * nothing else needs to change when it does.
+ * The streak *count* itself is no longer stored here — as of Phase 5 it's
+ * computed on demand from reminder_logs (see database.ts's
+ * getCurrentDoneStreak). This module only queues the one-time "show a
+ * banner" flag once a milestone is reached, since that's a UI concern, not
+ * data the database needs to own.
  */
-export async function getStreak(): Promise<number> {
-  const raw = await AsyncStorage.getItem(KEYS.streak);
-  return raw ? Number(raw) : 0;
-}
-
-/** Call from onReminderResolved('done'). */
-export async function recordDone(): Promise<void> {
-  const next = (await getStreak()) + 1;
-  await AsyncStorage.setItem(KEYS.streak, String(next));
-
-  if (STREAK_REINFORCEMENT_MILESTONES.includes(next)) {
-    await AsyncStorage.setItem(KEYS.pendingReinforcement, String(next));
+export async function maybeQueueReinforcement(streak: number): Promise<void> {
+  if (STREAK_REINFORCEMENT_MILESTONES.includes(streak)) {
+    await AsyncStorage.setItem(KEYS.pendingReinforcement, String(streak));
   }
-}
-
-/** Call from onReminderResolved('skip' | 'ignored'). */
-export async function resetStreak(): Promise<void> {
-  await AsyncStorage.setItem(KEYS.streak, '0');
 }
 
 /**

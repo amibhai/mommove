@@ -2,6 +2,12 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 
 import ScreenTracker from '../../modules/screen-tracker';
+import {
+  getCurrentDoneStreak,
+  insertReminderLog,
+  TRIGGER_TYPE_30MIN_CONTINUOUS_USE,
+  type ReminderActionTaken,
+} from '../db/database';
 import { SNOOZE_5_MIN, SNOOZE_30_MIN } from '../config/reminderConfig';
 import {
   ACTION_DONE,
@@ -13,12 +19,17 @@ import {
   toneForSnooze,
 } from './notifications';
 import {
+  clearTriggerFiredState,
+  getLastShownMessageId,
   getPendingNotificationId,
+  getSnoozeCount,
+  getTriggerFiredAtMs,
+  getTriggerSessionDurationMin,
   incrementSnoozeCount,
   resetSnoozeCount,
   setPendingNotificationId,
 } from './reminderTriggerState';
-import { recordDone, resetStreak } from './streakTracker';
+import { maybeQueueReinforcement } from './streakTracker';
 
 const LOG_PREFIX = '[MomMove:actions]';
 
@@ -26,19 +37,38 @@ const BACKGROUND_NOTIFICATION_TASK = 'MOMMOVE_BACKGROUND_NOTIFICATION_TASK';
 
 export type ReminderResolution = 'done' | 'skip' | 'ignored';
 
+const ACTION_TAKEN_BY_RESOLUTION: Record<ReminderResolution, ReminderActionTaken> = {
+  done: 'done',
+  skip: 'skipped',
+  ignored: 'ignored',
+};
+
 /**
- * Called for every resolved reminder. The streak bookkeeping below is a
- * placeholder — Phase 5 will replace it with a real SQLite write/query,
- * without needing to change any of this function's call sites.
+ * Called once per trigger, on its *final* resolution (done/skip/ignored —
+ * never for individual snooze taps, which just reschedule the same
+ * trigger). Writes one row to reminder_logs, then checks whether the
+ * fresh streak (computed from the database, not a separately-maintained
+ * counter) just crossed a reinforcement milestone.
  */
 export async function onReminderResolved(resolution: ReminderResolution): Promise<void> {
   console.log(`${LOG_PREFIX} onReminderResolved('${resolution}')`);
 
-  if (resolution === 'done') {
-    await recordDone();
-  } else {
-    await resetStreak();
-  }
+  const firedAtMs = getTriggerFiredAtMs();
+  const resolvedAtMs = Date.now();
+
+  await insertReminderLog({
+    timestamp: new Date(resolvedAtMs).toISOString(),
+    triggerType: TRIGGER_TYPE_30MIN_CONTINUOUS_USE,
+    actionTaken: ACTION_TAKEN_BY_RESOLUTION[resolution],
+    snoozeCount: getSnoozeCount(),
+    responseTimeSec: firedAtMs !== null ? Math.round((resolvedAtMs - firedAtMs) / 1000) : null,
+    sessionDurationMin: getTriggerSessionDurationMin(),
+    messageId: getLastShownMessageId(),
+  });
+  clearTriggerFiredState();
+
+  const streak = await getCurrentDoneStreak();
+  await maybeQueueReinforcement(streak);
 }
 
 async function handleSnooze(minutes: number): Promise<void> {
