@@ -1,6 +1,12 @@
 import * as Notifications from 'expo-notifications';
 
-import { SNOOZE_ESCALATION_THRESHOLD } from '../config/reminderConfig';
+import type { MessageTone } from '../config/messagePool';
+import {
+  SNOOZE_ESCALATION_THRESHOLD,
+  WARM_VARIETY_EVERY_N_TRIGGERS,
+} from '../config/reminderConfig';
+import { getCurrentTimeOfDay, selectMessage } from './messageSelector';
+import { getUserName } from './preferencesStore';
 
 // Show the notification banner even while MomMove itself happens to be in
 // the foreground (rare in practice, since the reminder fires while she's
@@ -70,28 +76,26 @@ export async function configureNotificationCategoriesAsync(): Promise<void> {
   ]);
 }
 
-// --- Copy ---
+// --- Copy: pulled from the message pool (src/config/messagePool.ts) ---
 //
-// Structured as a single lookup keyed by snooze count so Phase 4's message
-// pool/personalization can replace just this function without touching any
-// call site.
-function getReminderCopy(snoozeCount: number): { title: string; body: string } {
-  if (snoozeCount >= SNOOZE_ESCALATION_THRESHOLD) {
-    return {
-      title: 'Still there?',
-      body: "Still haven't moved — even 30 seconds helps. Stand up and stretch.",
-    };
-  }
+// These two decide *which tone* to use; messageSelector.ts then picks an
+// actual message for that tone + time of day. Kept here, next to the
+// firing code, since the "rules" differ for a fresh cycle vs. a snooze.
 
-  return {
-    title: 'Time to move',
-    body: "You've been on your phone a while — stand up, check your posture, and do a quick neck stretch.",
-  };
+/** Fresh 30-minute-cycle trigger: mostly casual, occasionally warm. */
+export function toneForFreshTrigger(triggerCount: number): MessageTone {
+  return triggerCount > 0 && triggerCount % WARM_VARIETY_EVERY_N_TRIGGERS === 0
+    ? 'warm'
+    : 'casual';
+}
+
+/** Snooze follow-up: casual until it escalates to direct at the threshold. */
+export function toneForSnooze(snoozeCount: number): MessageTone {
+  return snoozeCount >= SNOOZE_ESCALATION_THRESHOLD ? 'direct' : 'casual';
 }
 
 type FireReminderOptions = {
-  /** Consecutive snoozes for the current trigger cycle; selects copy. */
-  snoozeCount?: number;
+  tone: MessageTone;
   /** Delay before showing, for snooze follow-ups. Omit to fire immediately. */
   delaySeconds?: number;
 };
@@ -101,15 +105,14 @@ type FireReminderOptions = {
  * buttons. Returns the notification's identifier so callers can track
  * whether it's still showing (see reminderActions.ts's ignored-detection).
  */
-export async function fireReminderNotification(
-  options: FireReminderOptions = {}
-): Promise<string> {
-  const { snoozeCount = 0, delaySeconds } = options;
-  const { title, body } = getReminderCopy(snoozeCount);
+export async function fireReminderNotification(options: FireReminderOptions): Promise<string> {
+  const { tone, delaySeconds } = options;
+  const name = await getUserName();
+  const body = selectMessage(tone, getCurrentTimeOfDay(), name);
 
   return Notifications.scheduleNotificationAsync({
     content: {
-      title,
+      title: 'MomMove',
       body,
       categoryIdentifier: REMINDER_CATEGORY,
     },
