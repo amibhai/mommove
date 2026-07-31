@@ -6,7 +6,7 @@ import {
   WARM_VARIETY_EVERY_N_TRIGGERS,
 } from '../config/reminderConfig';
 import { getCurrentTimeOfDay, getLastSelectedMessageId, selectMessage } from './messageSelector';
-import { getUserName } from './preferencesStore';
+import { getNotificationStyle, getUserName } from './preferencesStore';
 import { setLastShownMessageId } from './reminderTriggerState';
 
 // Show the notification banner even while MomMove itself happens to be in
@@ -77,6 +77,34 @@ export async function configureNotificationCategoriesAsync(): Promise<void> {
   ]);
 }
 
+// --- Sound/vibration (Android notification channel) ---
+
+export const REMINDER_CHANNEL_ID = 'mommove-reminders';
+
+/**
+ * Android locks a channel's sound/vibration once it's created — per
+ * expo-notifications' own docs, "after a channel has been created, you can
+ * modify only its name and description." So the only way for the Settings
+ * screen's sound/vibration toggles to actually take effect is to delete
+ * and recreate this channel with the current preference each time. Called
+ * once at startup (index.ts) and again whenever Settings saves a change.
+ */
+export async function configureReminderNotificationChannelAsync(): Promise<void> {
+  const { soundEnabled, vibrationEnabled } = await getNotificationStyle();
+
+  await Notifications.deleteNotificationChannelAsync(REMINDER_CHANNEL_ID).catch(() => {
+    // No-op if it doesn't exist yet (first launch).
+  });
+
+  await Notifications.setNotificationChannelAsync(REMINDER_CHANNEL_ID, {
+    name: 'Reminders',
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: soundEnabled ? 'default' : null,
+    enableVibrate: vibrationEnabled,
+    vibrationPattern: vibrationEnabled ? [0, 250, 250, 250] : null,
+  });
+}
+
 // --- Copy: pulled from the message pool (src/config/messagePool.ts) ---
 //
 // These two decide *which tone* to use; messageSelector.ts then picks an
@@ -120,12 +148,18 @@ export async function fireReminderNotification(options: FireReminderOptions): Pr
       body,
       categoryIdentifier: REMINDER_CATEGORY,
     },
+    // Note: a plain `trigger: null` (immediate) does NOT carry a channelId
+    // through to Android — channelId only exists on the `trigger` object
+    // (see expo-notifications' ChannelAwareTriggerInput/TimeIntervalTriggerInput
+    // types), never on `content`. So "immediate" here means "fire now, on
+    // this channel" via `{ channelId }`, not a bare null.
     trigger: delaySeconds
       ? {
           type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
           seconds: delaySeconds,
           repeats: false,
+          channelId: REMINDER_CHANNEL_ID,
         }
-      : null,
+      : { channelId: REMINDER_CHANNEL_ID },
   });
 }
