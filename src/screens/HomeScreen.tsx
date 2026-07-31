@@ -3,18 +3,37 @@ import React, { useCallback, useState } from 'react';
 import { SafeAreaView, StatusBar, StyleSheet, Text, View } from 'react-native';
 
 import ReinforcementBanner from '../components/ReinforcementBanner';
+import UpdateBanner from '../components/UpdateBanner';
 import { hasNotificationPermission } from '../services/notifications';
 import { consumePendingReinforcement } from '../services/streakTracker';
+import {
+  dismissUpdateBanner,
+  getPendingUpdateForBanner,
+  type PendingUpdate,
+} from '../services/updateChecker';
 
 export default function HomeScreen() {
   const [reinforcementMessage, setReinforcementMessage] = useState<string | null>(null);
   const [notificationsGranted, setNotificationsGranted] = useState(true);
+  const [pendingUpdate, setPendingUpdate] = useState<PendingUpdate | null>(null);
 
   useFocusEffect(
     useCallback(() => {
       hasNotificationPermission().then(setNotificationsGranted);
+      // Re-reads the cached check result (no network call) every time Home
+      // gains focus, so a check triggered from Settings' manual button is
+      // reflected here without a duplicate fetch.
+      getPendingUpdateForBanner().then(setPendingUpdate);
     }, [])
   );
+
+  const handleDismissUpdate = useCallback(() => {
+    if (!pendingUpdate) {
+      return;
+    }
+    dismissUpdateBanner(pendingUpdate.latestVersion);
+    setPendingUpdate(null);
+  }, [pendingUpdate]);
 
   React.useEffect(() => {
     consumePendingReinforcement().then((milestone) => {
@@ -28,6 +47,14 @@ export default function HomeScreen() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" />
       <View style={styles.container}>
+        {pendingUpdate ? (
+          <UpdateBanner
+            latestVersion={pendingUpdate.latestVersion}
+            apkUrl={pendingUpdate.apkUrl}
+            onDismiss={handleDismissUpdate}
+          />
+        ) : null}
+
         {reinforcementMessage ? (
           <ReinforcementBanner
             message={reinforcementMessage}
