@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   SafeAreaView,
@@ -23,11 +24,7 @@ import { exportLogsAsCsv } from '../services/csvExport';
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const BAR_MAX_HEIGHT = 90;
 
-type Props = {
-  onBack: () => void;
-};
-
-export default function SummaryScreen({ onBack }: Props) {
+export default function SummaryScreen() {
   const [loading, setLoading] = useState(true);
   const [today, setToday] = useState<DailyCounts | null>(null);
   const [week, setWeek] = useState<DayDoneCount[]>([]);
@@ -48,9 +45,14 @@ export default function SummaryScreen({ onBack }: Props) {
     setLoading(false);
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  // Refetches every time this tab gains focus, so numbers stay current
+  // after e.g. firing a test notification from Developer Tools and
+  // switching back over.
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load])
+  );
 
   const handleExport = useCallback(async () => {
     setExporting(true);
@@ -70,10 +72,6 @@ export default function SummaryScreen({ onBack }: Props) {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" />
       <ScrollView contentContainerStyle={styles.content}>
-        <TouchableOpacity style={styles.backButton} onPress={onBack} accessibilityRole="button">
-          <Text style={styles.backButtonText}>← Back</Text>
-        </TouchableOpacity>
-
         <Text style={styles.title}>Summary</Text>
 
         {loading || !today ? (
@@ -152,14 +150,6 @@ const styles = StyleSheet.create({
     padding: 24,
     paddingBottom: 48,
   },
-  backButton: {
-    marginBottom: 16,
-  },
-  backButtonText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#B7A9FF',
-  },
   title: {
     fontSize: 36,
     fontWeight: '800',
@@ -198,10 +188,10 @@ const styles = StyleSheet.create({
   },
   dayColumn: {
     alignItems: 'center',
-    width: 36,
+    width: 40,
   },
   dayCount: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '700',
     color: '#FFFFFF',
     marginBottom: 4,
@@ -217,13 +207,13 @@ const styles = StyleSheet.create({
     backgroundColor: '#7C5CFC',
   },
   dayLabel: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
     color: '#B7A9FF',
     marginTop: 6,
   },
   rollupLine: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '500',
     color: '#E6E1FF',
     marginBottom: 6,
