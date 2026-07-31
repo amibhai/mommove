@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 
 import ReinforcementBanner from '../components/ReinforcementBanner';
+import { getCurrentDoneStreak, insertFakeLogEntries, getRecentLogs, pruneOldLogs } from '../db/database';
 import { getLastSelectedMessage } from '../services/messageSelector';
 import { fireReminderNotification } from '../services/notifications';
 import {
@@ -22,7 +23,7 @@ import { onReminderResolved } from '../services/reminderActions';
 import { checkReminderGate, type ReminderGateResult } from '../services/reminderGating';
 import { getSnoozeCount } from '../services/reminderTriggerState';
 import { getDebugContinuousTimeSec } from '../services/screenTimeTracker';
-import { consumePendingReinforcement, getStreak } from '../services/streakTracker';
+import { consumePendingReinforcement } from '../services/streakTracker';
 
 const TEST_NAME = 'Anita';
 
@@ -45,7 +46,7 @@ function DebugPanel() {
       setSnoozeCount(getSnoozeCount());
       setLastMessage(getLastSelectedMessage());
       checkReminderGate().then(setGate);
-      getStreak().then(setStreak);
+      getCurrentDoneStreak().then(setStreak);
     }, 1000);
     return () => clearInterval(interval);
   }, []);
@@ -77,6 +78,24 @@ function DebugPanel() {
 
   const simulateSkip = useCallback(() => {
     void onReminderResolved('skip');
+  }, []);
+
+  const logFakeEntries = useCallback(() => {
+    void insertFakeLogEntries(10);
+  }, []);
+
+  const forcePruneCheck = useCallback(() => {
+    pruneOldLogs().then(({ prunedCount, rolledUpWeeks }) => {
+      console.log(
+        `[MomMove:db] force prune check: pruned=${prunedCount} rolledUpWeeks=${rolledUpWeeks}`
+      );
+    });
+  }, []);
+
+  const dumpRecentLogs = useCallback(() => {
+    getRecentLogs(5).then((rows) => {
+      console.log('[MomMove:db] most recent log rows:', JSON.stringify(rows, null, 2));
+    });
   }, []);
 
   const mm = Math.floor(seconds / 60)
@@ -124,6 +143,19 @@ function DebugPanel() {
         </TouchableOpacity>
       </View>
 
+      <View style={styles.debugRow}>
+        <TouchableOpacity style={styles.debugSmallButton} onPress={logFakeEntries} accessibilityRole="button">
+          <Text style={styles.debugActionButtonText}>Log 10 fake entries</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.debugSmallButton} onPress={forcePruneCheck} accessibilityRole="button">
+          <Text style={styles.debugActionButtonText}>Force prune check</Text>
+        </TouchableOpacity>
+      </View>
+
+      <TouchableOpacity style={styles.debugActionButton} onPress={dumpRecentLogs} accessibilityRole="button">
+        <Text style={styles.debugActionButtonText}>Dump recent logs (console)</Text>
+      </TouchableOpacity>
+
       <TouchableOpacity
         style={[styles.pauseButton, paused && styles.pauseButtonActive]}
         onPress={togglePause}
@@ -137,7 +169,11 @@ function DebugPanel() {
   );
 }
 
-export default function HomeScreen() {
+type Props = {
+  onOpenSummary: () => void;
+};
+
+export default function HomeScreen({ onOpenSummary }: Props) {
   const [reinforcementMessage, setReinforcementMessage] = useState<string | null>(null);
 
   useEffect(() => {
@@ -162,6 +198,15 @@ export default function HomeScreen() {
         <Text style={styles.subtitle}>
           Setup complete — reminder features coming soon
         </Text>
+
+        <TouchableOpacity
+          style={styles.summaryButton}
+          onPress={onOpenSummary}
+          accessibilityRole="button"
+        >
+          <Text style={styles.summaryButtonText}>View Summary</Text>
+        </TouchableOpacity>
+
         {__DEV__ ? <DebugPanel /> : null}
       </View>
     </SafeAreaView>
@@ -191,6 +236,20 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#E6E1FF',
     textAlign: 'center',
+  },
+  summaryButton: {
+    marginTop: 28,
+    backgroundColor: '#7C5CFC',
+    paddingVertical: 18,
+    paddingHorizontal: 36,
+    borderRadius: 14,
+    minWidth: 240,
+    alignItems: 'center',
+  },
+  summaryButtonText: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   debugBox: {
     marginTop: 40,
