@@ -90,10 +90,10 @@ from the notification shade without opening the app:
   trigger cycle.
 - **Skip** — clears it, resets the snooze count, marks it resolved.
 
-Snooze the same trigger 3 times in a row and the copy shifts from the
-casual "Time to move" to a more direct "Still there? Still haven't moved —
-even 30 seconds helps." The snooze count resets on Done/Skip, or whenever a
-fresh 30-minute cycle begins.
+Snooze the same trigger 3 times in a row and the copy shifts from casual to
+a firmer "direct" tone (see Phase 4 below for what that actually says). The
+snooze count resets on Done/Skip, or whenever a fresh 30-minute cycle
+begins.
 
 Two things can silently suppress the reminder without resetting the
 continuous-time counter, so exactly one reminder fires the moment the
@@ -105,6 +105,49 @@ suppression lifts instead of a pile of overdue ones:
 - **Pause Today** — a manual override that lasts until local midnight. No
   real toggle exists yet (Phase 6), but there's a temporary **Pause Today**
   button in the Phase 2/3 debug panel on the home screen for testing.
+
+## Message pool and personalization (Phase 4)
+
+Every notification now comes from a pool of 34 hand-written messages in
+`src/config/messagePool.ts` — a mix of English and Hindi (both Devanagari
+and Roman script), the way a family actually texts, always addressing her
+as "{name}" (resolves to **"Mummy"** by default — see below).
+
+`src/services/messageSelector.ts` picks one:
+
+- Filtered by **tone** (`casual` / `warm` / `direct`) and **time of day**
+  (`morning` before 12:00, `afternoon` 12:00–17:00, `evening` after 17:00 —
+  messages not tagged for a specific time of day match any time).
+- Never repeats one of the last 3 message IDs shown, regardless of tone.
+- `{name}` is substituted with the stored user name.
+
+Which tone gets used, and where:
+
+- **Normal 30-minute trigger:** `casual`, except every 4th trigger in a row
+  pulls `warm` instead, for variety (`WARM_VARIETY_EVERY_N_TRIGGERS` in
+  `reminderConfig.ts`).
+- **Snoozes 1–2:** stay `casual`.
+- **3rd consecutive snooze (escalation):** switches to `direct` — firmer,
+  never scolding (e.g. "थोड़ा तो उठिए {name}, फोन कहीं नहीं जा रहा।").
+
+**Name personalization:** `getUserName()` / `setUserName()` in
+`src/services/preferencesStore.ts` (same AsyncStorage pattern as Phase 3's
+quiet-hours values), defaulting to `"Mummy"` if never set. No Settings UI
+exists yet to change it (Phase 6) — the debug panel has a temporary
+"Name: … · tap to switch" button that toggles a test name, to confirm
+substitution works without needing that UI.
+
+## In-app streak reinforcement (Phase 4)
+
+A consecutive-"Done" streak is tracked in AsyncStorage
+(`src/services/streakTracker.ts` — a placeholder Phase 5 will migrate to a
+real query against logged actions). It increments on `onReminderResolved('done')`
+and resets to 0 on `'skip'` or `'ignored'`.
+
+Hitting 3, 5, or 10 in a row queues a small **in-app** banner (never a push
+notification) — shown once, the next time the app is opened, via
+`ReinforcementBanner` on the home screen, then auto-hides after a few
+seconds.
 
 ## On-device test protocol (Phase 2)
 
@@ -158,9 +201,10 @@ lines for everything below.
      after one snooze.
 2. **Escalation on the 3rd snooze:** trigger a reminder and tap **Snooze
    5m** three times in a row (waiting for each follow-up to reappear).
-   Confirm the 3rd notification's text has changed to **"Still there?" /
-   "Still haven't moved — even 30 seconds helps."**, and the debug snooze
-   count reads `3`.
+   Confirm the 3rd notification's text reads noticeably firmer than the
+   first two (e.g. "थोड़ा तो उठिए {name}, फोन कहीं नहीं जा रहा।" instead of
+   something casual) — see Phase 4 below for exactly where this copy comes
+   from — and the debug snooze count reads `3`.
 3. **Swipe-dismiss without tapping anything:** trigger a reminder, then
    swipe it away from the shade instead of tapping a button. Within about
    15 seconds (the tracker's tick interval), logcat should show
@@ -183,6 +227,31 @@ lines for everything below.
    Tap the button again (now labeled "Paused today · tap to resume") to
    turn it back off, and confirm the next threshold crossing fires
    normally.
+
+## On-device test protocol (Phase 4)
+
+1. **Message variety:** on the home screen's debug panel, tap **Fire test
+   notification** 10+ times in a row (each one fires immediately with
+   `tone: 'casual'`). Confirm the notification body varies each time — a mix
+   of English and Hindi/Hinglish — and doesn't repeat the same message
+   within 3 taps. The **DEBUG · last message** row mirrors whatever was just
+   selected, so you don't have to keep swiping the shade open.
+2. **Name personalization:** with no Settings UI yet, the name defaults to
+   **"Mummy"** — confirm that's what appears in the fired messages. Then tap
+   the debug panel's **"Name: … · tap to switch"** button (toggles to a test
+   name and back) and fire another test notification to confirm the new
+   name is substituted correctly.
+3. **Escalation pulls from the direct pool:** snooze the same trigger 3
+   times in a row (Phase 3 protocol, step 2). Confirm the 3rd notification's
+   text is one of the firmer `direct`-tone messages, not the old fixed
+   string, and that it's still recognizably not scolding.
+4. **Streak reinforcement banner:** on the debug panel, tap **Simulate
+   Done** three times in a row (each call runs the real
+   `onReminderResolved('done')` path, so it also exercises the streak
+   storage). Fully close and reopen the app (swipe it away from Recents,
+   then relaunch) — confirm a green banner reading **"Nice — that's 3 in a
+   row today 💪"** appears briefly on the home screen. Tap **Simulate
+   Skip** and confirm **DEBUG · streak** drops back to `0`.
 
 ## Technical approach: why a custom native module
 
@@ -262,9 +331,13 @@ notification).
 ## Where Phase 5 hooks in
 
 `onReminderResolved(resolution)` in `src/services/reminderActions.ts` is
-called for every `'done'`, `'skip'`, and `'ignored'` resolution — it's
-currently a `console.log` stub. Phase 5 replaces its body with a real
-SQLite write; no call sites need to change.
+called for every `'done'`, `'skip'`, and `'ignored'` resolution — it logs,
+and (as of Phase 4) updates the AsyncStorage-backed streak in
+`src/services/streakTracker.ts`. Phase 5 replaces the streak's storage with
+a real SQLite write/query; `onReminderResolved`'s call sites don't need to
+change. Similarly, `getUserName`/`setUserName` and `getActiveHours`/
+`setActiveHours` (`src/services/preferencesStore.ts`) are exactly where
+Phase 6's Settings screen should read from and write to.
 
 ## Project structure
 
@@ -276,31 +349,32 @@ modules/screen-tracker/        - local native module: screen on/off signal,
                                   notification-presence check
 src/
   screens/                    - top-level screens (Home, PermissionOnboarding)
-  components/                 - shared/reusable UI components
+  components/                 - ReinforcementBanner and other shared UI
   services/                   - screenTimeTracker, notifications, reminderActions,
-                                  reminderGating, reminderTriggerState, preferencesStore
-  config/                     - reminderConfig.ts and other constants
+                                  reminderGating, reminderTriggerState,
+                                  preferencesStore, messageSelector, streakTracker
+  config/                     - reminderConfig.ts, messagePool.ts
   db/                         - local storage / database layer (not yet used)
 ```
 
 ## Project Status
 
-**Phase 3 — Interactive reminders, quiet hours, pause.** The reminder
-notification now has Done / Snooze 5m / Snooze 30m / Skip actions that work
-from the notification shade even when the app is backgrounded or killed,
-with copy that escalates after 3 consecutive snoozes. Reminders are
-suppressed (without losing the continuous-time count) during quiet hours or
-a manual "Pause Today" override. The debug panel on the home screen now
-also shows the live snooze count and current suppression state, plus a
-temporary Pause Today button.
+**Phase 4 — Message pool and personalization.** Notifications now pull from
+a 34-message pool (English + Hindi/Hinglish, mixed Devanagari and Roman
+script) instead of one static line, filtered by tone and time of day,
+never immediately repeating, personalized with a name that defaults to
+"Mummy". The Phase 3 snooze-escalation path now pulls from the pool's
+`direct` tone instead of a hardcoded string. A small in-app (not push)
+banner celebrates 3/5/10-in-a-row "Done" streaks. The debug panel gained a
+last-selected-message readout, streak count, a manual test-notification
+button, and Simulate Done/Skip buttons.
 
-Explicitly not in this phase: message pool/personalization/time-of-day copy
-variety, SQLite logging (the `onReminderResolved` stub is wired up and
-ready for it), a real Settings screen UI, and update mechanism changes.
+Explicitly not in this phase: SQLite logging (the streak counter is an
+AsyncStorage placeholder Phase 5 will migrate), a real Settings screen UI,
+and update mechanism changes.
 
 Planned next (later phases):
 
-- Message pool, personalization, and time-of-day copy variety
-- Local logging (SQLite) — wired into `onReminderResolved`
-- Settings screen UI (active hours, thresholds — logic/storage already in place)
+- Local logging (SQLite) — wired into `onReminderResolved` and the streak counter
+- Settings screen UI (name, active hours, thresholds — logic/storage already in place)
 - An update mechanism (since the app isn't distributed via the Play Store)
