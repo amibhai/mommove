@@ -1,4 +1,5 @@
 import Constants from 'expo-constants';
+import * as Updates from 'expo-updates';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   SafeAreaView,
@@ -32,6 +33,7 @@ import {
   setUserName,
 } from '../services/preferencesStore';
 import { refreshTrackerConfig } from '../services/screenTimeTracker';
+import { checkForUpdate } from '../services/updateChecker';
 
 const VERSION_TAPS_TO_UNLOCK = 5;
 const VERSION_TAP_RESET_MS = 2000;
@@ -67,6 +69,9 @@ export default function SettingsScreen() {
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
   const [devToolsUnlocked, setDevToolsUnlocked] = useState(false);
+  const [updateCheckStatus, setUpdateCheckStatus] = useState<
+    'idle' | 'checking' | 'up-to-date' | 'update-available' | 'check-failed'
+  >('idle');
 
   const tapCountRef = useRef(0);
   const tapResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -155,6 +160,12 @@ export default function SettingsScreen() {
     },
     [soundEnabled]
   );
+
+  const handleCheckForUpdates = useCallback(async () => {
+    setUpdateCheckStatus('checking');
+    const result = await checkForUpdate();
+    setUpdateCheckStatus(result.status);
+  }, []);
 
   const handleVersionTap = useCallback(() => {
     tapCountRef.current += 1;
@@ -266,11 +277,44 @@ export default function SettingsScreen() {
           </View>
         </SectionCard>
 
-        <TouchableOpacity onPress={handleVersionTap} accessibilityRole="button">
-          <Text style={styles.versionText}>
-            MomMove v{Constants.expoConfig?.version ?? '1.0.0'}
+        <SectionCard title="About">
+          <TouchableOpacity onPress={handleVersionTap} accessibilityRole="button">
+            <Text style={styles.versionText}>
+              MomMove v{Constants.expoConfig?.version ?? '1.0.0'}
+            </Text>
+          </TouchableOpacity>
+          <Text style={styles.aboutDetail}>
+            OTA update channel: {Updates.channel ?? 'not configured'}
           </Text>
-        </TouchableOpacity>
+          <Text style={styles.aboutDetail}>
+            {Updates.isEmbeddedLaunch
+              ? 'Running the build’s original code (no OTA update applied yet)'
+              : `Running OTA update ${Updates.updateId?.slice(0, 8) ?? 'unknown'}`}
+          </Text>
+          <TouchableOpacity
+            style={styles.checkUpdateButton}
+            onPress={handleCheckForUpdates}
+            accessibilityRole="button"
+            disabled={updateCheckStatus === 'checking'}
+          >
+            <Text style={styles.checkUpdateButtonText}>
+              {updateCheckStatus === 'checking' ? 'Checking…' : 'Check for updates'}
+            </Text>
+          </TouchableOpacity>
+          {updateCheckStatus === 'up-to-date' ? (
+            <Text style={styles.aboutFeedback}>You&rsquo;re up to date.</Text>
+          ) : null}
+          {updateCheckStatus === 'update-available' ? (
+            <Text style={styles.aboutFeedback}>
+              Update available — see the banner on Home to download it.
+            </Text>
+          ) : null}
+          {updateCheckStatus === 'check-failed' ? (
+            <Text style={styles.aboutFeedback}>
+              Couldn&rsquo;t check right now — try again later.
+            </Text>
+          ) : null}
+        </SectionCard>
 
         {devToolsUnlocked ? <DeveloperToolsPanel /> : null}
       </ScrollView>
@@ -344,12 +388,39 @@ const styles = StyleSheet.create({
     borderColor: '#3A2E70',
   },
   versionText: {
-    marginTop: 12,
     textAlign: 'center',
     fontSize: 16,
     fontWeight: '500',
-    color: '#7A6FB0',
+    color: '#B7A9FF',
     minHeight: 44,
     paddingVertical: 12,
+  },
+  aboutDetail: {
+    textAlign: 'center',
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#7A6FB0',
+    marginBottom: 4,
+  },
+  checkUpdateButton: {
+    marginTop: 12,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: '#3A2E70',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+  },
+  checkUpdateButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  aboutFeedback: {
+    marginTop: 10,
+    textAlign: 'center',
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#E6E1FF',
   },
 });
