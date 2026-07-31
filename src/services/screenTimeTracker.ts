@@ -7,6 +7,7 @@ import {
   TRACKING_TICK_INTERVAL_SEC,
 } from '../config/reminderConfig';
 import { fireReminderNotification, toneForFreshTrigger } from './notifications';
+import { getReminderTiming } from './preferencesStore';
 import { checkForIgnoredReminder } from './reminderActions';
 import { checkReminderGate } from './reminderGating';
 import { incrementTriggerCount, markTriggerFired, resetSnoozeCount } from './reminderTriggerState';
@@ -21,6 +22,31 @@ const LOG_PREFIX = '[MomMove:tracker]';
 // mirrored into native memory (see below) so it's robust either way.
 let continuousTimeSec = 0;
 let lastTickAtMs: number | null = null;
+
+// Cached copies of the (now user-adjustable, Phase 6) threshold/gap. tick()
+// only ever reads these two vars — never AsyncStorage directly — so the 15s
+// hot loop never waits on storage I/O. They're refreshed in exactly two
+// places: when tracking (re)starts, and when Settings explicitly saves a
+// change (see refreshTrackerConfig()). See README for the reliability
+// tradeoff this implies.
+let cachedThresholdMin = CONTINUOUS_TIME_THRESHOLD_MIN;
+let cachedGapMin = BREAK_RESET_GAP_MIN;
+
+async function loadTrackerConfig(): Promise<void> {
+  const { thresholdMin, gapMin } = await getReminderTiming();
+  cachedThresholdMin = thresholdMin;
+  cachedGapMin = gapMin;
+  console.log(
+    `${LOG_PREFIX} config loaded: threshold=${cachedThresholdMin}min gap=${cachedGapMin}min`
+  );
+}
+
+/** Called by the Settings screen right after saving a new threshold/gap,
+ * so the change is picked up on the very next tick instead of waiting for
+ * the next app/service restart. */
+export async function refreshTrackerConfig(): Promise<void> {
+  await loadTrackerConfig();
+}
 
 /**
  * One evaluation of the reminder state machine. Invoked repeatedly by the
@@ -45,23 +71,23 @@ async function tick(): Promise<void> {
     );
   } else {
     const offMinutes = msSinceTransition / 60_000;
-    if (offMinutes >= BREAK_RESET_GAP_MIN) {
+    if (offMinutes >= cachedGapMin) {
       if (continuousTimeSec > 0) {
         console.log(
-          `${LOG_PREFIX} real break detected (screen off ${offMinutes.toFixed(1)}min >= ${BREAK_RESET_GAP_MIN}min gap) -> reset continuousTime to 0`
+          `${LOG_PREFIX} real break detected (screen off ${offMinutes.toFixed(1)}min >= ${cachedGapMin}min gap) -> reset continuousTime to 0`
         );
       }
       continuousTimeSec = 0;
     } else {
       console.log(
-        `${LOG_PREFIX} screen off, only ${offMinutes.toFixed(1)}min (< ${BREAK_RESET_GAP_MIN}min reset gap) -> not a break yet, continuousTime holds at ${continuousTimeSec.toFixed(1)}s`
+        `${LOG_PREFIX} screen off, only ${offMinutes.toFixed(1)}min (< ${cachedGapMin}min reset gap) -> not a break yet, continuousTime holds at ${continuousTimeSec.toFixed(1)}s`
       );
     }
   }
 
   ScreenTracker.setDebugContinuousTimeSec(Math.round(continuousTimeSec));
 
-  const thresholdSec = CONTINUOUS_TIME_THRESHOLD_MIN * 60;
+  const thresholdSec = cachedThresholdMin * 60;
   if (continuousTimeSec >= thresholdSec) {
     const gate = await checkReminderGate();
     if (gate.suppressed) {
@@ -70,7 +96,7 @@ async function tick(): Promise<void> {
       );
     } else {
       console.log(
-        `${LOG_PREFIX} continuousTime reached ${CONTINUOUS_TIME_THRESHOLD_MIN}min threshold -> firing reminder notification`
+        `${LOG_PREFIX} continuousTime reached ${cachedThresholdMin}min threshold -> firing reminder notification`
       );
       // A fresh cycle begins: wipe any leftover snooze count from a
       // previous, never-resolved trigger. (The fired notification's
@@ -104,6 +130,12 @@ export function startScreenTimeTracking(): void {
   lastTickAtMs = null;
   continuousTimeSec = 0;
   ScreenTracker.setDebugContinuousTimeSec(0);
+  // Fire-and-forget: picks up whatever was last saved. There's a brief
+  // (sub-second, one-time) window where the very first tick or two could
+  // still see the previous cached/default values while this resolves —
+  // harmless, and far simpler than making startup itself async just to
+  // avoid it. See README for the full reliability tradeoff.
+  void loadTrackerConfig();
   ScreenTracker.startTracking(TRACKING_TICK_INTERVAL_SEC);
 }
 
