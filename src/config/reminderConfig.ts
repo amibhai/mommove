@@ -32,3 +32,11 @@ export const SNOOZE_30_MIN = 30;
 // Consecutive snoozes (for the same unresolved trigger) after which the
 // reminder copy shifts to something more direct.
 export const SNOOZE_ESCALATION_THRESHOLD = 3;
+
+// For fresh 30-minute-cycle triggers (not escalated snoozes): every Nth
+// trigger pulls a 'warm' message instead of 'casual', for variety.
+export const WARM_VARIETY_EVERY_N_TRIGGERS = 4;
+
+// Streak milestones (consecutive "Done" resolutions) that show an in-app
+// positive-reinforcement banner the next time the app is opened.
+export const STREAK_REINFORCEMENT_MILESTONES = [3, 5, 10];
