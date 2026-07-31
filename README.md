@@ -337,7 +337,171 @@ wrinkle here: expo-notifications' `channelId` field lives on the
 must use `trigger: { channelId }` rather than a bare `trigger: null` for
 the channel (and its sound/vibration) to actually apply.
 
-## On-device test protocols (Phases 2–6)
+## Update mechanism: OTA + full APK version checks (Phase 7)
+
+Because MomMove isn't distributed via the Play Store, it can never rely on
+Play Store auto-updates. Phase 7 adds the two update paths that stand in
+for that, matched to the two kinds of change this app will ever need:
+
+- **EAS Update (OTA)** — for JS-only changes (message copy, config
+  defaults, logic fixes). Downloads silently in the background and applies
+  itself the *next* time she opens the app. Zero taps required from her.
+- **Full APK version check** — for changes that touch native code (new
+  permissions, new native modules, an Expo SDK bump), which OTA fundamentally
+  can't deliver. The app checks a small hosted JSON file on launch and shows
+  a one-tap "Update available" banner on Home if a newer native build exists.
+  She still has to tap through Android's normal install flow — there's no
+  way to make that itself silent — but the *checking* is silent and the
+  banner only appears when there's actually something to get.
+
+### EAS Update (OTA) configuration
+
+`expo-updates` is configured in `app.json`:
+- `updates.checkAutomatically: "ON_LOAD"` — checks for a new update every
+  time the app launches. This is expo-updates' own default background
+  behavior: if a new update is found, it downloads without interrupting the
+  current session and becomes active on the **next** cold start. There's no
+  extra JS code driving this (no manual `Updates.checkForUpdateAsync()` /
+  `reloadAsync()` calls) — this phase deliberately doesn't hot-swap
+  mid-session, since that's unnecessary complexity for how this app is used.
+- `updates.fallbackToCacheTimeout: 0` — never blocks app startup waiting on
+  a check; it always launches from cache immediately and updates happen
+  fully in the background.
+- `runtimeVersion.policy: "appVersion"` — an OTA update is only offered to
+  installs whose native build has the *same* `version` string in `app.json`
+  as the update was published against. **This is why you must never bump
+  `app.json`'s `"version"` for an OTA-only change** — doing so would silently
+  make that update invisible to everyone still on the old native build.
+  Only bump `"version"` when you're doing a full native rebuild (see
+  "Releasing Updates" below).
+
+`eas.json`'s `preview` build profile — the one that produces the actual
+installable APK she runs (see "Building with EAS instead" above) — has
+`"channel": "production"`. That's the **one channel this project uses**;
+every `eas update` push and every APK she installs are tied to it. (The
+channel is named "production" to mean "the real build she's running," even
+though the *build profile* itself is still called `preview` — that's just
+EAS's naming for "internal distribution, not app-store," not a statement
+about which channel it publishes to.)
+
+One-time setup that hasn't been run yet in this repo (do this once, as
+whoever holds the Expo account):
+
+```bash
+eas login
+eas init                # links this repo to a project on your Expo account
+eas update:configure    # writes the real updates.url + confirms runtimeVersion into app.json
+```
+
+`eas update:configure` overwrites the placeholder `updates.url` currently in
+`app.json` (`"REPLACE_ME_RUN_EAS_UPDATE_CONFIGURE"`) with the real
+`https://u.expo.dev/<project-id>` URL — until that's been run once, OTA
+checks will fail (harmlessly — same as any other unreachable-server case).
+
+### Full APK version-check manifest
+
+`manifest.json` lives at the **repo root**, fetched from its raw GitHub URL:
+
+```
+https://raw.githubusercontent.com/amibhai/mommove/main/manifest.json
+```
+
+That exact URL is hardcoded as `MANIFEST_URL` in
+`src/services/updateChecker.ts` — moving the file anywhere else means
+updating that one constant to match.
+
+```json
+{
+  "latest_version": "1.0.0",
+  "apk_url": "https://github.com/amibhai/mommove/releases/download/v1.0.0/mommove.apk",
+  "changelog": "Initial release",
+  "min_supported_version": "1.0.0"
+}
+```
+
+`updateChecker.checkForUpdate()` fetches it (an 8s timeout via
+`AbortController`), compares `latest_version` against the *installed native
+build's* version (`expo-application`'s `Application.nativeApplicationVersion`
+— deliberately not the OTA-updatable JS/config version, since this check
+exists specifically to catch changes OTA can't deliver), and caches the
+result to AsyncStorage. Any failure — no internet, GitHub unreachable,
+malformed JSON, timeout — resolves to a `'check-failed'` result rather than
+throwing, so it's structurally impossible for this check to interrupt her or
+show an error. It's called once, fire-and-forget, from `App.tsx` on every
+launch, and on-demand from Settings' "Check for updates" button.
+
+The Home screen banner (`src/components/UpdateBanner.tsx`) reads the
+*cached* result via `getPendingUpdateForBanner()` (no network call) on every
+focus, so it reflects whatever the most recent check found — whether that
+check happened on this launch or from a manual tap in Settings. Dismissing
+it calls `dismissUpdateBanner(version)`, which persists that version to
+AsyncStorage; the banner logic re-checks that stored value against the
+latest known version, so it only reappears once a genuinely *newer* version
+is published — not on every subsequent app open for the same one.
+
+### Settings → About
+
+The Settings screen's version number (tap 5× for Developer Tools, unchanged
+from Phase 6) now sits in a proper "About" section alongside the current OTA
+channel (`Updates.channel`) and update id (`Updates.updateId`, or "no OTA
+update applied yet" if still running the build's embedded code), plus a
+"Check for updates" button that re-runs the manifest check and shows
+immediate feedback: "You're up to date," "Update available — see the banner
+on Home," or "Couldn't check right now" on failure.
+
+## Releasing Updates
+
+Two separate release paths — use the one that matches what actually
+changed. **Getting this choice wrong doesn't corrupt anything** (worst case
+for choosing OTA when a native rebuild was needed: the update silently
+doesn't apply, since `runtimeVersion` won't match), but it does mean the
+change never reaches her, so default to "if in doubt, do the full APK path."
+
+**Use OTA** for: message pool copy, `reminderConfig.ts` defaults, any pure
+logic fix inside `src/` that doesn't add a new import from a native module.
+
+**Use a full APK rebuild** for: anything touching `modules/screen-tracker`
+(the custom native module), a new permission in `app.json`, a new
+`expo-*`/native dependency, or an Expo SDK upgrade.
+
+### Path A — JS-only change (OTA, no reinstall needed for her)
+
+```bash
+eas update --branch production --message "Description of what changed"
+```
+
+That's it — she doesn't do anything. It downloads next time she has the app
+open in the background, and applies the next time she cold-starts it after
+that (see "checkAutomatically" above for exactly why it's a two-open
+process, not one). **Do not bump `app.json`'s `"version"` for this path.**
+
+### Path B — native change (full APK required)
+
+```bash
+# 1. Bump "version" in app.json (e.g. 1.0.0 -> 1.1.0)
+
+# 2. Build the new APK
+eas build --platform android --profile preview
+
+# 3. Download the resulting APK from the URL EAS gives you, then create a
+#    GitHub Release with it attached, e.g. tag v1.1.0, uploading the APK as
+#    mommove.apk
+
+# 4. Update manifest.json at the repo root:
+#    - "latest_version": "1.1.0"
+#    - "apk_url": the new Release's download URL
+#    - "changelog": a short human-readable line for what changed
+
+# 5. Commit and push manifest.json
+git add manifest.json
+git commit -m "release: v1.1.0"
+git push
+```
+
+Once that push lands, her app will show the "Update available" banner the
+next time it launches and re-checks the manifest.
+
+## On-device test protocols (Phases 2–7)
 
 > **Note:** every `DEBUG · ...` readout and debug button referenced in the
 > Phase 2–5 protocols below used to live directly on the Home screen. As of
@@ -508,6 +672,49 @@ lines for everything below.
    overlapping, or breaking the layout (scrolling further if needed is
    fine — clipped/cut-off text is not).
 
+## On-device test protocol (Phase 7)
+
+Requires a real installed build (the OTA half specifically can't be tested
+in a development client — it needs a build that actually has `updates.url`
+pointed at a real EAS project, so do the one-time `eas init` /
+`eas update:configure` setup from "EAS Update (OTA) configuration" above
+before starting).
+
+1. **OTA update applies on the 2nd open, not the 1st:** make a trivial
+   change (e.g. edit one string in `src/config/messagePool.ts`), then push
+   it: `eas update --branch production --message "test: trivial OTA
+   change"`. Fully close the app (swipe it away, not just background it) and
+   reopen it once — confirm the change is **not** visible yet (this open is
+   what triggers the background download). Fully close and reopen a second
+   time — confirm the change **is** now visible.
+2. **APK banner appears + links correctly:** edit `manifest.json` locally,
+   bump `"latest_version"` to something higher than the installed APK's
+   version (e.g. `"99.0.0"`), commit and push it. Relaunch the app — confirm
+   the "Update available — tap to download" banner appears on Home. Tap it
+   — confirm it opens `apk_url` in the device browser (not in-app).
+3. **Dismissal persists for that version:** dismiss the banner (✕), then
+   fully close and reopen the app. Confirm the banner does **not** reappear
+   for that same `"99.0.0"` — then bump `manifest.json` to an even higher
+   fake version (e.g. `"99.0.1"`), push, relaunch, and confirm the banner
+   **does** reappear (a genuinely newer version always breaks through a
+   prior dismissal). Afterwards, revert `manifest.json` back to the real
+   released version and push again.
+4. **Manual "Check for updates" — up to date:** with `manifest.json` back to
+   a version at or below the installed APK's version, go to Settings → tap
+   **Check for updates**. Confirm it shows "You're up to date."
+5. **Manual "Check for updates" — update available:** repeat step 2's
+   manifest bump, then tap **Check for updates** in Settings without
+   relaunching the app first. Confirm it shows the "Update available" message
+   immediately, and that returning to Home now shows the banner too (proves
+   the banner reads the same cached result the manual check just wrote, not
+   just its own launch-time check).
+6. **Silent failure, no error surfaced:** turn on Android's Airplane Mode,
+   then relaunch the app. Confirm nothing errors, nothing blocks startup,
+   and no banner/message appears anywhere claiming a check failed. Turn
+   Airplane Mode back off, tap **Check for updates** in Settings, and confirm
+   it now resolves normally ("up to date" or "update available" per whatever
+   `manifest.json` currently says).
+
 ## Technical approach: why a custom native module
 
 Android will suspend or kill ordinary background JS within seconds to
@@ -583,9 +790,9 @@ expo-notifications' native code, or requesting the much heavier
 `NotificationListenerService` permission just to observe our own
 notification).
 
-## Where Phase 7 hooks in
+## Where Phase 8 hooks in
 
-Every user-adjustable value now has a real, storage-backed home:
+Every user-adjustable value has a real, storage-backed home:
 `getReminderTiming`/`setReminderTiming`, `getActiveHours`/`setActiveHours`,
 `getUserName`/`setUserName`, `getIsPausedToday`/`setPauseToday`, and
 `getNotificationStyle`/`setNotificationStyle` (all in
@@ -595,46 +802,52 @@ phase can read from or extend. `onReminderResolved(resolution)` in
 the live streak — unchanged this phase. Navigation is a plain
 `@react-navigation/native` bottom-tab tree in `App.tsx` (Home / Summary /
 Settings), with the Usage Access onboarding gate still standing outside of
-it — any future screen just needs a new `Tab.Screen` entry.
+it — any future screen just needs a new `Tab.Screen` entry. The update
+mechanism itself (this phase) needs no further wiring for a pure visual/copy
+polish pass — Phase 8 only touches styling and message copy, both of which
+ride the OTA path already built here.
 
 ## Project structure
 
 ```
 App.tsx                        - app entry point: onboarding gate, then the
-                                  Home/Summary/Settings bottom-tab navigator
+                                  Home/Summary/Settings bottom-tab navigator,
+                                  plus the silent launch-time update check
 index.ts                       - registers headless task, notification handling,
                                   and the reminder notification channel
+manifest.json                  - hosted version-check manifest (Phase 7),
+                                  fetched raw from GitHub by updateChecker.ts
 modules/screen-tracker/        - local native module: screen on/off signal,
                                   foreground service, Usage Access helpers,
                                   notification-presence check
 src/
   screens/                    - Home, PermissionOnboarding, Summary, Settings
-  components/                 - Stepper, DeveloperToolsPanel, ReinforcementBanner
+  components/                 - Stepper, DeveloperToolsPanel, ReinforcementBanner,
+                                  UpdateBanner
   services/                   - screenTimeTracker, notifications, reminderActions,
                                   reminderGating, reminderTriggerState,
                                   preferencesStore, messageSelector, streakTracker,
-                                  csvExport
+                                  csvExport, updateChecker
   config/                     - reminderConfig.ts, messagePool.ts
   db/                         - database.ts (all SQL lives here)
 ```
 
 ## Project Status
 
-**Phase 6 — Real navigation and Settings.** MomMove now has a real
-bottom-tab navigator (Home / Summary / Settings) instead of ad-hoc local
-state, and a real Settings screen exposing every previously debug-only
-value: reminder timing (now genuinely adjustable, not hardcoded), active
-hours, pause-today, display name, and new sound/vibration toggles wired
-into an actual Android notification channel. All prior debug tools moved
-into a single hidden "Developer Tools" panel (reveal: tap the version
-number 5× on Settings). An accessibility pass applied 16px+ body text,
-20px+ headers, 44×44dp touch targets, and text-labeled (not icon-only)
-controls across Home, Summary, and Settings.
+**Phase 7 — Update mechanism.** MomMove now has both update paths a
+non-Play-Store app needs: `expo-updates` configured for silent OTA delivery
+of JS-only changes (checks on every launch, applies on the next cold start,
+never hot-swaps mid-session), and a hosted `manifest.json` version-check for
+full native rebuilds, surfaced as a dismissible "Update available" banner on
+Home plus a manual "Check for updates" button and OTA channel/id readout in
+Settings → About. See "Update mechanism" and "Releasing Updates" above for
+the exact configuration and release commands, and "On-device test protocol
+(Phase 7)" for how to verify all of it on a real device.
 
-Explicitly not in this phase: update mechanism changes, and any visual/copy
-polish beyond functional accessibility.
+Explicitly not in this phase: any change to notification, tracking,
+logging, or settings logic itself, and any visual/copy polish beyond what
+was strictly needed here.
 
 Planned next (later phases):
 
-- An update mechanism (since the app isn't distributed via the Play Store)
-- Visual/copy polish pass
+- Final visual/copy polish pass
