@@ -1,6 +1,11 @@
+// Must be the very first import — required setup for react-native-gesture-handler,
+// which @react-navigation depends on.
+import 'react-native-gesture-handler';
+
 import { registerRootComponent } from 'expo';
 
 import App from './App';
+import { configureReminderNotificationChannelAsync } from './src/services/notifications';
 import { registerNotificationHandling } from './src/services/reminderActions';
 import { registerScreenTimeTrackerHeadlessTask } from './src/services/screenTimeTracker';
 
@@ -13,6 +18,11 @@ registerScreenTimeTrackerHeadlessTask();
 // with no App component ever mounting, so the category/background-task
 // registration can't live inside a useEffect.
 registerNotificationHandling();
+
+// Ensures the reminder notification channel exists (and reflects the
+// current sound/vibration preference) from the very first launch, not
+// just after the Settings screen has been opened once.
+void configureReminderNotificationChannelAsync();
 
 // registerRootComponent calls AppRegistry.registerComponent('main', () => App);
 // It also ensures that whether you load the app in Expo Go or in a native build,

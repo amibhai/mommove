@@ -1,17 +1,28 @@
+import { NavigationContainer } from '@react-navigation/native';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import React, { useCallback, useEffect, useState } from 'react';
-import { AppState, AppStateStatus } from 'react-native';
+import { AppState, AppStateStatus, Text } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { pruneOldLogs } from './src/db/database';
 import ScreenTracker from './modules/screen-tracker';
 import HomeScreen from './src/screens/HomeScreen';
 import PermissionOnboardingScreen from './src/screens/PermissionOnboardingScreen';
+import SettingsScreen from './src/screens/SettingsScreen';
 import SummaryScreen from './src/screens/SummaryScreen';
 import { requestNotificationPermission } from './src/services/notifications';
 import { getIsPausedToday } from './src/services/preferencesStore';
 import { startScreenTimeTracking } from './src/services/screenTimeTracker';
 
 type Stage = 'onboarding' | 'ready';
-type View = 'home' | 'summary';
+
+const Tab = createBottomTabNavigator();
+
+function tabIcon(emoji: string) {
+  return ({ focused }: { focused: boolean }) => (
+    <Text style={{ fontSize: 22, opacity: focused ? 1 : 0.6 }}>{emoji}</Text>
+  );
+}
 
 export default function App() {
   // Usage Access can be checked synchronously, so the initial stage is
@@ -19,7 +30,6 @@ export default function App() {
   const [stage, setStage] = useState<Stage>(() =>
     ScreenTracker.hasUsageAccessPermission() ? 'ready' : 'onboarding'
   );
-  const [view, setView] = useState<View>('home');
 
   useEffect(() => {
     if (stage === 'ready') {
@@ -31,7 +41,7 @@ export default function App() {
     // getIsPausedToday() clears the flag as a side effect once its midnight
     // deadline has passed — the reminder gate already calls this every
     // tick, but checking explicitly on launch/foreground means a stale
-    // "paused" state never lingers in the debug UI either.
+    // "paused" state never lingers in Settings either.
     getIsPausedToday();
 
     const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
@@ -67,9 +77,31 @@ export default function App() {
     return <PermissionOnboardingScreen onGranted={handlePermissionGranted} />;
   }
 
-  if (view === 'summary') {
-    return <SummaryScreen onBack={() => setView('home')} />;
-  }
-
-  return <HomeScreen onOpenSummary={() => setView('summary')} />;
+  return (
+    <SafeAreaProvider>
+      <NavigationContainer>
+        <Tab.Navigator
+          screenOptions={{
+            headerShown: false,
+            tabBarActiveTintColor: '#FFFFFF',
+            tabBarInactiveTintColor: '#9E92C4',
+            tabBarStyle: { backgroundColor: '#241D45', borderTopColor: '#3A2E70' },
+            tabBarLabelStyle: { fontSize: 13, fontWeight: '700' },
+          }}
+        >
+          <Tab.Screen name="Home" component={HomeScreen} options={{ tabBarIcon: tabIcon('🏠') }} />
+          <Tab.Screen
+            name="Summary"
+            component={SummaryScreen}
+            options={{ tabBarIcon: tabIcon('📊') }}
+          />
+          <Tab.Screen
+            name="Settings"
+            component={SettingsScreen}
+            options={{ tabBarIcon: tabIcon('⚙️') }}
+          />
+        </Tab.Navigator>
+      </NavigationContainer>
+    </SafeAreaProvider>
+  );
 }
