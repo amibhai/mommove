@@ -8,32 +8,51 @@ import {
   View,
 } from 'react-native';
 
-import { getIsPausedToday, setPauseToday } from '../services/preferencesStore';
+import ReinforcementBanner from '../components/ReinforcementBanner';
+import { getLastSelectedMessage } from '../services/messageSelector';
+import { fireReminderNotification } from '../services/notifications';
+import {
+  DEFAULT_USER_NAME,
+  getIsPausedToday,
+  getUserName,
+  setPauseToday,
+  setUserName,
+} from '../services/preferencesStore';
+import { onReminderResolved } from '../services/reminderActions';
 import { checkReminderGate, type ReminderGateResult } from '../services/reminderGating';
 import { getSnoozeCount } from '../services/reminderTriggerState';
 import { getDebugContinuousTimeSec } from '../services/screenTimeTracker';
+import { consumePendingReinforcement, getStreak } from '../services/streakTracker';
+
+const TEST_NAME = 'Anita';
 
 // [DEBUG-ONLY, TEMPORARY] Live readout of tracker/reminder-engine state, so
 // correctness can be verified on-device without needing `adb logcat` for
 // every check. Remove this block (and the imports above) once the real
-// Settings screen (Phase 6) replaces the Pause Today toggle below.
+// Settings screen (Phase 6) replaces the Pause Today/name-testing buttons.
 function DebugPanel() {
   const [seconds, setSeconds] = useState(getDebugContinuousTimeSec());
   const [snoozeCount, setSnoozeCount] = useState(getSnoozeCount());
   const [gate, setGate] = useState<ReminderGateResult>({ suppressed: false });
   const [paused, setPaused] = useState(false);
+  const [lastMessage, setLastMessage] = useState(getLastSelectedMessage());
+  const [streak, setStreak] = useState(0);
+  const [userName, setUserNameState] = useState(DEFAULT_USER_NAME);
 
   useEffect(() => {
     const interval = setInterval(() => {
       setSeconds(getDebugContinuousTimeSec());
       setSnoozeCount(getSnoozeCount());
+      setLastMessage(getLastSelectedMessage());
       checkReminderGate().then(setGate);
+      getStreak().then(setStreak);
     }, 1000);
     return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
     getIsPausedToday().then(setPaused);
+    getUserName().then(setUserNameState);
   }, []);
 
   const togglePause = useCallback(async () => {
@@ -41,6 +60,24 @@ function DebugPanel() {
     await setPauseToday(next);
     setPaused(next);
   }, [paused]);
+
+  const toggleTestName = useCallback(async () => {
+    const next = userName === DEFAULT_USER_NAME ? TEST_NAME : DEFAULT_USER_NAME;
+    await setUserName(next);
+    setUserNameState(next);
+  }, [userName]);
+
+  const fireTestNotification = useCallback(() => {
+    void fireReminderNotification({ tone: 'casual' });
+  }, []);
+
+  const simulateDone = useCallback(() => {
+    void onReminderResolved('done');
+  }, []);
+
+  const simulateSkip = useCallback(() => {
+    void onReminderResolved('skip');
+  }, []);
 
   const mm = Math.floor(seconds / 60)
     .toString()
@@ -60,9 +97,32 @@ function DebugPanel() {
       <Text style={styles.debugValue}>{snoozeCount}</Text>
 
       <Text style={[styles.debugLabel, styles.debugLabelSpaced]}>DEBUG · suppression</Text>
-      <Text style={styles.debugValue}>
-        {gate.suppressed ? gate.reason : 'none'}
-      </Text>
+      <Text style={styles.debugValue}>{gate.suppressed ? gate.reason : 'none'}</Text>
+
+      <Text style={[styles.debugLabel, styles.debugLabelSpaced]}>DEBUG · streak (Done in a row)</Text>
+      <Text style={styles.debugValue}>{streak}</Text>
+
+      <Text style={[styles.debugLabel, styles.debugLabelSpaced]}>DEBUG · last message ({userName})</Text>
+      <Text style={styles.debugMessage}>{lastMessage ?? '(none yet)'}</Text>
+
+      <TouchableOpacity style={styles.debugActionButton} onPress={fireTestNotification} accessibilityRole="button">
+        <Text style={styles.debugActionButtonText}>Fire test notification</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity style={styles.debugActionButton} onPress={toggleTestName} accessibilityRole="button">
+        <Text style={styles.debugActionButtonText}>
+          Name: {userName} · tap to switch
+        </Text>
+      </TouchableOpacity>
+
+      <View style={styles.debugRow}>
+        <TouchableOpacity style={styles.debugSmallButton} onPress={simulateDone} accessibilityRole="button">
+          <Text style={styles.debugActionButtonText}>Simulate Done</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.debugSmallButton} onPress={simulateSkip} accessibilityRole="button">
+          <Text style={styles.debugActionButtonText}>Simulate Skip</Text>
+        </TouchableOpacity>
+      </View>
 
       <TouchableOpacity
         style={[styles.pauseButton, paused && styles.pauseButtonActive]}
@@ -78,10 +138,26 @@ function DebugPanel() {
 }
 
 export default function HomeScreen() {
+  const [reinforcementMessage, setReinforcementMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    consumePendingReinforcement().then((milestone) => {
+      if (milestone !== null) {
+        setReinforcementMessage(`Nice — that's ${milestone} in a row today 💪`);
+      }
+    });
+  }, []);
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" />
       <View style={styles.container}>
+        {reinforcementMessage ? (
+          <ReinforcementBanner
+            message={reinforcementMessage}
+            onHide={() => setReinforcementMessage(null)}
+          />
+        ) : null}
         <Text style={styles.title}>MomMove</Text>
         <Text style={styles.subtitle}>
           Setup complete — reminder features coming soon
@@ -124,6 +200,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#7C5CFC',
     alignItems: 'center',
+    maxWidth: 340,
   },
   debugLabel: {
     fontSize: 12,
@@ -140,6 +217,37 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     marginTop: 4,
     fontVariant: ['tabular-nums'],
+  },
+  debugMessage: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  debugActionButton: {
+    marginTop: 12,
+    backgroundColor: '#3A2E70',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+  },
+  debugActionButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
+    textAlign: 'center',
+  },
+  debugRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 12,
+  },
+  debugSmallButton: {
+    backgroundColor: '#3A2E70',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 10,
   },
   pauseButton: {
     marginTop: 16,
