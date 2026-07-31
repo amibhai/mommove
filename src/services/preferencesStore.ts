@@ -1,6 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {
+  BREAK_RESET_GAP_MIN,
+  CONTINUOUS_TIME_THRESHOLD_MIN,
   DEFAULT_ACTIVE_HOURS_END,
   DEFAULT_ACTIVE_HOURS_START,
 } from '../config/reminderConfig';
@@ -11,6 +13,10 @@ const KEYS = {
   isPausedToday: '@mommove/isPausedToday',
   pausedUntilTimestamp: '@mommove/pausedUntilTimestamp',
   userName: '@mommove/userName',
+  continuousTimeThresholdMin: '@mommove/continuousTimeThresholdMin',
+  breakResetGapMin: '@mommove/breakResetGapMin',
+  notificationSoundEnabled: '@mommove/notificationSoundEnabled',
+  notificationVibrationEnabled: '@mommove/notificationVibrationEnabled',
 } as const;
 
 export const DEFAULT_USER_NAME = 'Mummy';
@@ -20,11 +26,6 @@ export type ActiveHours = {
   end: number; // 24h, e.g. 21
 };
 
-/**
- * No Settings UI exists yet (Phase 6), so these always resolve to the
- * defaults today — but reading/writing through storage now means Phase 6
- * can add a UI without touching any of the gating logic that reads this.
- */
 export async function getActiveHours(): Promise<ActiveHours> {
   const [start, end] = await Promise.all([
     AsyncStorage.getItem(KEYS.activeHoursStart),
@@ -97,11 +98,6 @@ export async function getIsPausedToday(): Promise<boolean> {
   return true;
 }
 
-/**
- * No Settings UI exists yet (Phase 6) to change this, but reading/writing
- * through storage now means that phase just adds a text input — no
- * refactor of anything that calls getUserName() needed.
- */
 export async function getUserName(): Promise<string> {
   const name = await AsyncStorage.getItem(KEYS.userName);
   return name && name.trim().length > 0 ? name : DEFAULT_USER_NAME;
@@ -109,4 +105,60 @@ export async function getUserName(): Promise<string> {
 
 export async function setUserName(name: string): Promise<void> {
   await AsyncStorage.setItem(KEYS.userName, name);
+}
+
+export type ReminderTiming = {
+  thresholdMin: number;
+  gapMin: number;
+};
+
+/**
+ * The Phase 2 constants are only the *default* — screenTimeTracker.ts reads
+ * the current value through here (cached, refreshed on save — see its
+ * refreshTrackerConfig()) rather than importing the constants directly.
+ */
+export async function getReminderTiming(): Promise<ReminderTiming> {
+  const [thresholdStr, gapStr] = await Promise.all([
+    AsyncStorage.getItem(KEYS.continuousTimeThresholdMin),
+    AsyncStorage.getItem(KEYS.breakResetGapMin),
+  ]);
+
+  return {
+    thresholdMin: thresholdStr !== null ? Number(thresholdStr) : CONTINUOUS_TIME_THRESHOLD_MIN,
+    gapMin: gapStr !== null ? Number(gapStr) : BREAK_RESET_GAP_MIN,
+  };
+}
+
+export async function setReminderTiming(thresholdMin: number, gapMin: number): Promise<void> {
+  await Promise.all([
+    AsyncStorage.setItem(KEYS.continuousTimeThresholdMin, String(thresholdMin)),
+    AsyncStorage.setItem(KEYS.breakResetGapMin, String(gapMin)),
+  ]);
+}
+
+export type NotificationStyle = {
+  soundEnabled: boolean;
+  vibrationEnabled: boolean;
+};
+
+export async function getNotificationStyle(): Promise<NotificationStyle> {
+  const [soundStr, vibrationStr] = await Promise.all([
+    AsyncStorage.getItem(KEYS.notificationSoundEnabled),
+    AsyncStorage.getItem(KEYS.notificationVibrationEnabled),
+  ]);
+
+  return {
+    soundEnabled: soundStr !== null ? soundStr === 'true' : true,
+    vibrationEnabled: vibrationStr !== null ? vibrationStr === 'true' : true,
+  };
+}
+
+export async function setNotificationStyle(
+  soundEnabled: boolean,
+  vibrationEnabled: boolean
+): Promise<void> {
+  await Promise.all([
+    AsyncStorage.setItem(KEYS.notificationSoundEnabled, String(soundEnabled)),
+    AsyncStorage.setItem(KEYS.notificationVibrationEnabled, String(vibrationEnabled)),
+  ]);
 }
