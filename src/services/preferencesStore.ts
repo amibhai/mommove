@@ -10,7 +10,10 @@ const KEYS = {
   activeHoursEnd: '@mommove/activeHoursEnd',
   isPausedToday: '@mommove/isPausedToday',
   pausedUntilTimestamp: '@mommove/pausedUntilTimestamp',
+  userName: '@mommove/userName',
 } as const;
+
+export const DEFAULT_USER_NAME = 'Mummy';
 
 export type ActiveHours = {
   start: number; // 24h, e.g. 8
@@ -92,4 +95,18 @@ export async function getIsPausedToday(): Promise<boolean> {
   }
 
   return true;
+}
+
+/**
+ * No Settings UI exists yet (Phase 6) to change this, but reading/writing
+ * through storage now means that phase just adds a text input — no
+ * refactor of anything that calls getUserName() needed.
+ */
+export async function getUserName(): Promise<string> {
+  const name = await AsyncStorage.getItem(KEYS.userName);
+  return name && name.trim().length > 0 ? name : DEFAULT_USER_NAME;
+}
+
+export async function setUserName(name: string): Promise<void> {
+  await AsyncStorage.setItem(KEYS.userName, name);
 }

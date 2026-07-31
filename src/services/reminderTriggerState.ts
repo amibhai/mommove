@@ -25,6 +25,23 @@ export function resetSnoozeCount(): void {
   snoozeCount = 0;
 }
 
+// --- Trigger counting (for occasional tone variety) ---
+//
+// Counts fresh 30-minute-cycle notifications (not snooze follow-ups), so
+// notifications.ts can pull a 'warm' message every Nth trigger instead of
+// always 'casual'. In-memory only, same rationale as snoozeCount above.
+
+let triggerCount = 0;
+
+export function incrementTriggerCount(): number {
+  triggerCount += 1;
+  return triggerCount;
+}
+
+export function getTriggerCount(): number {
+  return triggerCount;
+}
+
 // --- "Ignored" detection bookkeeping ---
 //
 // expo-notifications doesn't expose Android's swipe-to-dismiss signal (it
