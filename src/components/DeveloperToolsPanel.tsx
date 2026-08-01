@@ -1,3 +1,4 @@
+import * as Updates from 'expo-updates';
 import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
@@ -7,6 +8,7 @@ import {
   insertFakeLogEntries,
   pruneOldLogs,
 } from '../db/database';
+import { exportLogsAsCsv } from '../services/csvExport';
 import { getLastSelectedMessage } from '../services/messageSelector';
 import { fireReminderNotification } from '../services/notifications';
 import { onReminderResolved } from '../services/reminderActions';
@@ -27,6 +29,8 @@ export default function DeveloperToolsPanel() {
   const [gate, setGate] = useState<ReminderGateResult>({ suppressed: false });
   const [lastMessage, setLastMessage] = useState(getLastSelectedMessage());
   const [streak, setStreak] = useState(0);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -47,8 +51,8 @@ export default function DeveloperToolsPanel() {
     .padStart(2, '0');
 
   const fireTestNotification = () => void fireReminderNotification({ tone: 'casual' });
-  const simulateDone = () => void onReminderResolved('done');
-  const simulateSkip = () => void onReminderResolved('skip');
+  const simulateDone = () => void onReminderResolved('done', { isDebug: true });
+  const simulateSkip = () => void onReminderResolved('skip', { isDebug: true });
   const logFakeEntries = () => void insertFakeLogEntries(10);
 
   const forcePruneCheck = () => {
@@ -65,16 +69,39 @@ export default function DeveloperToolsPanel() {
     });
   };
 
+  const handleExport = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      await exportLogsAsCsv();
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : 'Export failed.');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <View style={styles.container}>
       <Text style={styles.heading}>Developer Tools</Text>
-      <Text style={styles.subheading}>Not visible to her — testing only.</Text>
+      <Text style={styles.subheading}>
+        Not visible to her — testing only. "Simulate Done/Skip" and "Log 10
+        fake entries" write flagged synthetic rows, excluded from her real
+        Summary/streak/export. "Fire test notification" is a real
+        notification — resolving it (Done/Snooze/Skip) writes a real row,
+        same as genuine use.
+      </Text>
 
       <View style={styles.readouts}>
         <ReadoutRow label="Continuous time" value={`${mm}:${ss}`} />
         <ReadoutRow label="Snooze count" value={String(snoozeCount)} />
         <ReadoutRow label="Suppression" value={gate.suppressed ? gate.reason : 'none'} />
         <ReadoutRow label="Streak" value={String(streak)} />
+        <ReadoutRow label="OTA channel" value={Updates.channel ?? 'not configured'} />
+        <ReadoutRow
+          label="OTA update"
+          value={Updates.isEmbeddedLaunch ? 'embedded (none applied)' : (Updates.updateId?.slice(0, 8) ?? 'unknown')}
+        />
       </View>
 
       <Text style={styles.lastMessageLabel}>Last message shown</Text>
@@ -87,7 +114,12 @@ export default function DeveloperToolsPanel() {
         <DevButton label="Log 10 fake entries" onPress={logFakeEntries} />
         <DevButton label="Force prune check" onPress={forcePruneCheck} />
         <DevButton label="Dump recent logs (console)" onPress={dumpRecentLogs} />
+        <DevButton
+          label={exporting ? 'Exporting…' : 'Export Logs (CSV)'}
+          onPress={handleExport}
+        />
       </View>
+      {exportError ? <Text style={styles.exportError}>{exportError}</Text> : null}
     </View>
   );
 }
@@ -177,5 +209,10 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFFFFF',
     textAlign: 'center',
+  },
+  exportError: {
+    marginTop: 12,
+    fontSize: 13,
+    color: '#FF8080',
   },
 });
