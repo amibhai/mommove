@@ -442,12 +442,12 @@ is published — not on every subsequent app open for the same one.
 ### Settings → About
 
 The Settings screen's version number (tap 5× for Developer Tools, unchanged
-from Phase 6) now sits in a proper "About" section alongside the current OTA
-channel (`Updates.channel`) and update id (`Updates.updateId`, or "no OTA
-update applied yet" if still running the build's embedded code), plus a
-"Check for updates" button that re-runs the manifest check and shows
-immediate feedback: "You're up to date," "Update available — see the banner
-on Home," or "Couldn't check right now" on failure.
+from Phase 6) sits in a proper "About" section alongside a "Check for
+updates" button that re-runs the manifest check and shows immediate
+feedback: "You're up to date," "Update available — see the banner on Home,"
+or "Couldn't check right now" on failure. (As of Phase 8, the raw OTA
+channel/update-id readouts that originally lived here moved into Developer
+Tools instead — see below — since they're not something she needs to see.)
 
 ## Releasing Updates
 
@@ -501,7 +501,175 @@ git push
 Once that push lands, her app will show the "Update available" banner the
 next time it launches and re-checks the manifest.
 
-## On-device test protocols (Phases 2–7)
+## Final review-and-polish pass (Phase 8)
+
+Went through every screen before this app goes on her phone for real,
+ongoing use. Scoped as audit/copy/UI tightening, not new features — the one
+exception is the `is_debug` fix below, which is real logic.
+
+### App icon & splash
+
+Replaced Expo's default template icon/splash (the blueprint-style "A"
+placeholder and blank circles) with a simple mark — two overlapping circles
+forming a soft "leaf" shape, white on the app's existing accent purple
+(`#7C5CFC`, the same color already used for the notification icon). Applied
+to `assets/icon.png`, `android-icon-foreground/-background/-monochrome.png`,
+and `assets/splash-icon.png`, generated at each file's existing resolution
+(so no dimension changes). Also added an explicit `expo-splash-screen`
+plugin entry to `app.json` (there wasn't one before — the app was launching
+on whatever Expo's bare default provides), with `backgroundColor: "#1A1533"`
+so the splash matches the app's own dark theme instead of flashing white
+before it loads.
+
+**To swap in something nicer later:** replace the same six files in
+`assets/` (keep their exact filenames and pixel dimensions — run each
+through an image inspector if unsure, or just check they match what's
+already there) and re-run `npx expo prebuild --platform android --clean`
+(icon/splash changes are native, same as any other `app.json`/native-asset
+change — see "Building an installable APK locally" above). No code changes
+needed; nothing references these files by anything other than path.
+
+### Dev Tools data-safety fix (the one logic change this phase)
+
+Audited every Developer Tools button (hidden behind tapping the Settings
+version number 5× within 2 seconds — confirmed this gesture is obscure
+enough that normal use won't trigger it) for whether it could pollute her
+real data. Found one real gap: **"Log 10 fake entries" wrote rows
+indistinguishable from real ones**, meaning fake data could show up in her
+Summary counts, her streak, and her CSV export.
+
+Fixed by adding an `is_debug` column to `reminder_logs` (`src/db/database.ts`
+— `CREATE TABLE IF NOT EXISTS` for new installs, plus an idempotent
+`ALTER TABLE ... ADD COLUMN` for any install created before this column
+existed). `insertFakeLogEntries` now always writes `is_debug = 1`. Every
+real-facing query now filters `is_debug = 0`: `getCurrentDoneStreak` (so a
+fake "done" row can never trigger a real streak-milestone banner),
+`getTodayCounts`, `getLast7DaysDoneCounts`, and `getAllLogsForExport` (the
+CSV export). `pruneOldLogs` purges old synthetic rows same as real ones, but
+never rolls them into the real weekly rollup. The only place fake rows are
+still visible is "Dump recent logs" in Developer Tools, deliberately, so you
+can confirm they were actually flagged.
+
+**Noticed but didn't change:** "Simulate Done"/"Simulate Skip" and a fired
+"Fire test notification"'s own action buttons still write real
+(`is_debug = 0`) rows through the exact same path as genuine usage — same
+class of risk, just not the button you specifically flagged. Didn't touch
+these since you scoped this phase to exactly one piece of logic work; say
+the word and I'll extend the same `is_debug` flag to them.
+
+### Copy audit
+
+Found no leftover technical language (trigger/session/config-style words)
+anywhere in her-facing text — that was already clean. Two things fixed on
+the Summary screen: "Older weeks (rolled up)" → "Older weeks" (the rollup
+mechanism is an implementation detail, not something she needs to read),
+and raw ISO week-start dates ("2026-07-21") now render as "Jul 21, 2026".
+Also moved "Export Logs (CSV)" off the Summary screen entirely — like the
+OTA channel/id, it's explicitly a "not something she needs" utility (per
+its own code comment) that had no business sitting in her main UI; it's now
+a Developer Tools button instead.
+
+### Accessibility
+
+Re-checked every screen against 16px+ body / 20px+ headers, 44×44dp touch
+targets, and no unlabeled icon-only controls. Found and fixed several
+under-16px body-text instances that predated this pass: Summary's section
+labels, weekday labels, and day/week counts (14/13/15px → 16px), and the
+bottom tab bar's own labels (13px → 16px, previously missed by the Phase 6
+accessibility pass since it lives in `App.tsx`, not one of the three screen
+files). Also caught one borderline contrast case: the Phase 7 update
+banner's white 16px bold text on the app's usual `#7C5CFC` accent measures
+just under the 4.5:1 AA threshold — darkened it to `#5A3ED1` (same purple
+family, ~6.7:1) rather than change the app's established accent color
+everywhere else it's used at a larger, already-compliant size. Developer
+Tools' own text sizes were left as-is — it's not part of her accessibility
+surface (gated behind the same obscure gesture noted above).
+
+### Edge cases
+
+- **Usage Access revoked after the fact:** this was a real gap — the app
+  only ever checked once, at first launch. `App.tsx` now re-checks on every
+  foreground return while the app is in its normal "ready" state, and if
+  Usage Access is gone, stops tracking and drops back to the exact same
+  onboarding screen shown on first install (a calm, already-built re-prompt,
+  not a new screen).
+- **Notification permission revoked:** already showed a calm, non-crashing
+  warning pill on Home (Phase 6) — confirmed this still holds, and added a
+  tappable "Open Settings" button to it (`Linking.openSettings()`) so it's
+  not just informational, matching what the Usage Access re-prompt already
+  offered.
+- **Offline on first launch:** confirmed tracking and notifications have no
+  network dependency at all (fully local), and the only network call in the
+  app (Phase 7's update check) was already silent-fail-safe and
+  non-blocking. No changes needed.
+- **Force-closed with a notification active:** confirmed this was already
+  handled — Phase 3's TaskManager-backed background task (see "Notification
+  actions: surviving a backgrounded or killed app" below) exists
+  specifically so the four action buttons keep working even if the process
+  is dead. No changes needed.
+
+### Settings review
+
+Confirmed the defaults (30 min threshold, 2 min break gap, 8am–9pm active
+hours, sound/vibration on) are reasonable starting points and are already
+each adjustable from Settings without touching code — this is a judgment
+call, not a bug, so no changes made. Confirmed Settings no longer exposes
+anything irrelevant to her now that the OTA channel/id has moved to
+Developer Tools (see above).
+
+### Version tag
+
+`app.json`'s `"version"` and `manifest.json`'s `"latest_version"` /
+`"min_supported_version"` were already `1.0.0` and already consistent with
+each other — no change needed.
+
+**Once this pass is merged: build the release APK and create the GitHub
+Release** (`eas build --platform android --profile preview`, then attach the
+resulting `.apk` to a `v1.0.0` GitHub Release) — see "Path B" above for the
+exact steps. `manifest.json`'s `apk_url` already points at
+`.../releases/download/v1.0.0/mommove.apk`, so once that release exists at
+that exact tag/filename, the app's version-check banner logic is already
+correct end-to-end.
+
+### Bug fixes found on a second full pass
+
+Three real, silent bugs turned up going through the app a second time —
+none visible from casual use, all worth knowing about:
+
+- **Timezone bug in date labels (`src/db/database.ts`).** Both
+  `getLast7DaysDoneCounts`'s day labels and `mondayOfWeek`'s week-grouping
+  key built their `YYYY-MM-DD` string via `date.toISOString().slice(0, 10)`
+  — which converts to the *UTC* calendar date, silently off by a day from
+  the intended *local* date in any timezone ahead of UTC (including IST).
+  The query bounds themselves were always correct (full ISO instants); only
+  the display/grouping *label* was wrong. Fixed with a `toLocalDateString()`
+  helper that reads local year/month/day directly. A matching bug in
+  `SummaryScreen.tsx` — reconstructing a `Date` from that label via
+  `new Date("YYYY-MM-DD")`, which parses as UTC midnight per spec and can
+  roll `.getDay()` back a day in timezones *behind* UTC — is fixed the same
+  way (`parseLocalDate()`, using the local-time 3-arg `Date` constructor).
+- **Notification permission could go unrequested (`App.tsx`).** It was only
+  ever requested from the onboarding screen's "Continue" button. If the app
+  ever cold-starts *directly* into the "ready" stage — Usage Access can
+  already be granted at launch, e.g. surviving an uninstall/reinstall on
+  some Android versions — that handler never runs, so notification
+  permission was never asked at all. Fixed by also requesting it from the
+  same effect that starts tracking, guarded by a ref so it only ever fires
+  once per session regardless of which path reaches "ready" first — without
+  the guard, denying the dialog once during normal onboarding could
+  immediately re-trigger the same dialog a second time back-to-back.
+- **"Simulate Done"/"Simulate Skip" wrote real data.** Extending the
+  Phase 8 `is_debug` fix: these two Developer Tools buttons now pass
+  `{ isDebug: true }` through to `onReminderResolved`, so they're excluded
+  from her real stats the same as "Log 10 fake entries" already was.
+  "Fire test notification" still fires a real notification whose action
+  buttons write real rows if resolved — noted in Developer Tools' own
+  subheading now, left as-is since fixing it would mean threading state
+  through the shared real notification-resolution pipeline for a benefit
+  that only matters if you (never her) resolve a self-fired test
+  notification.
+
+## On-device test protocols (Phases 2–8)
 
 > **Note:** every `DEBUG · ...` readout and debug button referenced in the
 > Phase 2–5 protocols below used to live directly on the Home screen. As of
@@ -715,6 +883,37 @@ before starting).
    it now resolves normally ("up to date" or "update available" per whatever
    `manifest.json` currently says).
 
+## On-device test protocol (Phase 8)
+
+1. **Icon + splash:** uninstall any prior build, install the new one fresh.
+   Confirm the app drawer/home-screen icon is the new purple leaf mark, not
+   the old blue "A" placeholder. Cold-launch the app and confirm the splash
+   screen is dark (matching the app), not a white flash, before the Home
+   screen appears.
+2. **Fake entries don't touch real stats:** on Settings, note the current
+   streak/today counts (Developer Tools' "Streak" readout, and Summary's
+   "Today" line). Tap **Log 10 fake entries**. Confirm Summary's Today/This
+   week numbers and Developer Tools' Streak readout are **unchanged**. Tap
+   **Dump recent logs (console)** and confirm the newly inserted rows show
+   `"isDebug": true` in the logged JSON.
+3. **Export excludes fake rows:** with fake entries still present from step
+   2, tap **Export Logs (CSV)** in Developer Tools and open the resulting
+   file. Confirm none of the `fake-*` message IDs appear in it.
+4. **Usage Access revocation re-prompt:** with the app in its normal
+   ready state, background it, go to Android Settings → Apps → MomMove →
+   Permissions (or wherever Usage Access is toggled) and turn it off. Return
+   to MomMove. Confirm it shows the same "One quick step" onboarding screen
+   (not a crash, not a frozen/broken Home screen). Re-grant it and confirm
+   **Continue** returns you to normal use.
+5. **Notification permission re-prompt:** revoke notification permission
+   from Android Settings, return to MomMove, go to Home. Confirm the warning
+   pill appears with a working **Open Settings** button that opens the
+   app's OS settings page.
+6. **Font scaling, once more:** with everything above in place, set
+   Android's font size to its largest option and re-check Summary and
+   Settings specifically for the sections touched this phase (Older weeks
+   list, About section, tab bar labels) — confirm nothing clips or overlaps.
+
 ## Technical approach: why a custom native module
 
 Android will suspend or kill ordinary background JS within seconds to
@@ -790,7 +989,7 @@ expo-notifications' native code, or requesting the much heavier
 `NotificationListenerService` permission just to observe our own
 notification).
 
-## Where Phase 8 hooks in
+## If a future phase picks this back up
 
 Every user-adjustable value has a real, storage-backed home:
 `getReminderTiming`/`setReminderTiming`, `getActiveHours`/`setActiveHours`,
@@ -799,13 +998,13 @@ Every user-adjustable value has a real, storage-backed home:
 `src/services/preferencesStore.ts`) are the complete set of knobs a future
 phase can read from or extend. `onReminderResolved(resolution)` in
 `reminderActions.ts` still writes the real `reminder_logs` row and computes
-the live streak — unchanged this phase. Navigation is a plain
-`@react-navigation/native` bottom-tab tree in `App.tsx` (Home / Summary /
-Settings), with the Usage Access onboarding gate still standing outside of
-it — any future screen just needs a new `Tab.Screen` entry. The update
-mechanism itself (this phase) needs no further wiring for a pure visual/copy
-polish pass — Phase 8 only touches styling and message copy, both of which
-ride the OTA path already built here.
+the live streak (now filtered to `is_debug = 0`, see Phase 8). Navigation is
+a plain `@react-navigation/native` bottom-tab tree in `App.tsx` (Home /
+Summary / Settings), with the Usage Access onboarding gate standing outside
+of it and now also re-shown on permission revocation — any future screen
+just needs a new `Tab.Screen` entry. One deliberately-unfinished thread from
+Phase 8, noted there in full: "Simulate Done"/"Simulate Skip" and a fired
+test notification's action buttons still write real (non-`is_debug`) rows.
 
 ## Project structure
 
@@ -834,20 +1033,29 @@ src/
 
 ## Project Status
 
-**Phase 7 — Update mechanism.** MomMove now has both update paths a
+**Phase 8 — Final review-and-polish pass.** Went screen-by-screen before
+this app goes on her phone for real, ongoing use: a real icon/splash
+(replacing Expo's default template placeholders), a data-safety fix so
+Developer Tools' synthetic test data (`is_debug`) can never pollute her real
+Summary counts/streak/export, a copy audit (no jargon found, two Summary
+labels/dates made friendlier, two developer-only controls relocated out of
+her main UI), an accessibility re-check (several under-16px text instances
+fixed, one borderline-contrast banner color fixed), and edge-case handling
+for Usage Access/notification permission revocation. See "Final
+review-and-polish pass (Phase 8)" above for the full list, and "On-device
+test protocol (Phase 8)" to verify it. **Next step: build the release APK
+and create the `v1.0.0` GitHub Release** (see "Version tag" above) — once
+that's done, this build is what goes on her phone.
+
+Explicitly not in this phase: any new functionality, and any change to
+notification/tracking/logging/settings logic beyond the one `is_debug` fix
+called out above.
+
+Phase 7 (previous) — Update mechanism. MomMove has both update paths a
 non-Play-Store app needs: `expo-updates` configured for silent OTA delivery
 of JS-only changes (checks on every launch, applies on the next cold start,
 never hot-swaps mid-session), and a hosted `manifest.json` version-check for
 full native rebuilds, surfaced as a dismissible "Update available" banner on
-Home plus a manual "Check for updates" button and OTA channel/id readout in
-Settings → About. See "Update mechanism" and "Releasing Updates" above for
-the exact configuration and release commands, and "On-device test protocol
-(Phase 7)" for how to verify all of it on a real device.
-
-Explicitly not in this phase: any change to notification, tracking,
-logging, or settings logic itself, and any visual/copy polish beyond what
-was strictly needed here.
-
-Planned next (later phases):
-
-- Final visual/copy polish pass
+Home plus a manual "Check for updates" button in Settings → About. See
+"Update mechanism" and "Releasing Updates" above for the exact configuration
+and release commands.
