@@ -42,7 +42,10 @@ const styles = StyleSheet.create({
   banner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#7C5CFC',
+    // Deliberately deeper than the app's usual #7C5CFC accent — that shade
+    // is a hair under the 4.5:1 contrast ratio needed for white 16px text;
+    // this passes comfortably (~6.7:1) while staying in the same purple family.
+    backgroundColor: '#5A3ED1',
     borderRadius: 12,
     paddingVertical: 14,
     paddingLeft: 20,
@@ -62,7 +65,7 @@ const styles = StyleSheet.create({
   },
   subtext: {
     color: '#E6E1FF',
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '500',
     marginTop: 2,
   },
