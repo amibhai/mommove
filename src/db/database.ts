@@ -22,6 +22,9 @@ export interface ReminderLogEntry {
   responseTimeSec: number | null;
   sessionDurationMin: number | null;
   messageId: string | null;
+  /** Synthetic row from a Developer Tools action, e.g. "Log 10 fake
+   * entries" — never set by real reminder resolution. Defaults to false. */
+  isDebug?: boolean;
 }
 
 export interface ReminderLogRow extends ReminderLogEntry {
@@ -61,7 +64,8 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
           snooze_count INTEGER DEFAULT 0,
           response_time_sec INTEGER,
           session_duration_min INTEGER,
-          message_id TEXT
+          message_id TEXT,
+          is_debug INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS reminder_logs_weekly_rollup (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +76,10 @@ function getDb(): Promise<SQLite.SQLiteDatabase> {
           ignored_count INTEGER DEFAULT 0
         );
       `);
+      // CREATE TABLE IF NOT EXISTS only handles brand-new installs — this
+      // covers any install created before is_debug existed. Swallows the
+      // "duplicate column" error on every run after the first.
+      await db.execAsync('ALTER TABLE reminder_logs ADD COLUMN is_debug INTEGER NOT NULL DEFAULT 0').catch(() => {});
       return db;
     })();
   }
@@ -93,6 +101,7 @@ function rowToEntry(row: {
   response_time_sec: number | null;
   session_duration_min: number | null;
   message_id: string | null;
+  is_debug: number;
 }): ReminderLogRow {
   return {
     id: row.id,
@@ -103,6 +112,7 @@ function rowToEntry(row: {
     responseTimeSec: row.response_time_sec,
     sessionDurationMin: row.session_duration_min,
     messageId: row.message_id,
+    isDebug: row.is_debug === 1,
   };
 }
 
@@ -110,8 +120,8 @@ export async function insertReminderLog(entry: ReminderLogEntry): Promise<void> 
   const db = await getDb();
   await db.runAsync(
     `INSERT INTO reminder_logs
-       (timestamp, trigger_type, action_taken, snooze_count, response_time_sec, session_duration_min, message_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+       (timestamp, trigger_type, action_taken, snooze_count, response_time_sec, session_duration_min, message_id, is_debug)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       entry.timestamp,
       entry.triggerType,
@@ -120,6 +130,7 @@ export async function insertReminderLog(entry: ReminderLogEntry): Promise<void> 
       entry.responseTimeSec,
       entry.sessionDurationMin,
       entry.messageId,
+      entry.isDebug ? 1 : 0,
     ]
   );
 }
@@ -134,7 +145,7 @@ export async function insertReminderLog(entry: ReminderLogEntry): Promise<void> 
 export async function getCurrentDoneStreak(): Promise<number> {
   const db = await getDb();
   const rows = await db.getAllAsync<{ action_taken: string }>(
-    'SELECT action_taken FROM reminder_logs ORDER BY timestamp DESC, id DESC LIMIT 200'
+    'SELECT action_taken FROM reminder_logs WHERE is_debug = 0 ORDER BY timestamp DESC, id DESC LIMIT 200'
   );
 
   let streak = 0;
@@ -150,6 +161,19 @@ export async function getCurrentDoneStreak(): Promise<number> {
 function startOfTodayIso(): string {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0).toISOString();
+}
+
+/**
+ * Formats a Date as its *local* YYYY-MM-DD, unlike `date.toISOString().slice(0, 10)`
+ * — which silently shifts to the UTC calendar date instead, off by a day for
+ * any timezone ahead of UTC (including IST). Used wherever a Date needs to
+ * become a display/grouping label rather than a query-bound instant.
+ */
+function toLocalDateString(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 /**
@@ -174,7 +198,7 @@ export async function getTodayCounts(): Promise<DailyCounts> {
        SUM(CASE WHEN action_taken = 'ignored' THEN 1 ELSE 0 END) as ignored,
        SUM(CASE WHEN snooze_count > 0 THEN 1 ELSE 0 END) as snoozed
      FROM reminder_logs
-     WHERE timestamp >= ?`,
+     WHERE timestamp >= ? AND is_debug = 0`,
     [startOfTodayIso()]
   );
 
@@ -206,12 +230,12 @@ export async function getLast7DaysDoneCounts(): Promise<DayDoneCount[]> {
 
     const row = await db.getFirstAsync<{ doneCount: number }>(
       `SELECT COUNT(*) as doneCount FROM reminder_logs
-       WHERE action_taken = 'done' AND timestamp >= ? AND timestamp < ?`,
+       WHERE action_taken = 'done' AND timestamp >= ? AND timestamp < ? AND is_debug = 0`,
       [dayStart.toISOString(), dayEnd.toISOString()]
     );
 
     days.push({
-      date: dayStart.toISOString().slice(0, 10),
+      date: toLocalDateString(dayStart),
       doneCount: row?.doneCount ?? 0,
     });
   }
@@ -246,6 +270,7 @@ export async function getWeeklyRollups(limit = 8): Promise<WeeklyRollupRow[]> {
   }));
 }
 
+/** Real rows only — this feeds the CSV export, which is her data, not test data. */
 export async function getAllLogsForExport(): Promise<ReminderLogRow[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<{
@@ -257,12 +282,14 @@ export async function getAllLogsForExport(): Promise<ReminderLogRow[]> {
     response_time_sec: number | null;
     session_duration_min: number | null;
     message_id: string | null;
-  }>('SELECT * FROM reminder_logs ORDER BY timestamp ASC');
+    is_debug: number;
+  }>('SELECT * FROM reminder_logs WHERE is_debug = 0 ORDER BY timestamp ASC');
 
   return rows.map(rowToEntry);
 }
 
-/** [DEBUG-ONLY] Most recent N rows, for the "Dump recent logs" debug button. */
+/** [DEBUG-ONLY] Most recent N rows (including synthetic ones, so you can
+ * confirm they were actually flagged), for the "Dump recent logs" button. */
 export async function getRecentLogs(limit = 5): Promise<ReminderLogRow[]> {
   const db = await getDb();
   const rows = await db.getAllAsync<{
@@ -274,6 +301,7 @@ export async function getRecentLogs(limit = 5): Promise<ReminderLogRow[]> {
     response_time_sec: number | null;
     session_duration_min: number | null;
     message_id: string | null;
+    is_debug: number;
   }>('SELECT * FROM reminder_logs ORDER BY timestamp DESC, id DESC LIMIT ?', [limit]);
 
   return rows.map(rowToEntry);
@@ -285,7 +313,7 @@ function mondayOfWeek(isoTimestamp: string): string {
   const day = d.getDay(); // 0 = Sunday .. 6 = Saturday
   const diffToMonday = day === 0 ? -6 : 1 - day;
   const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() + diffToMonday);
-  return monday.toISOString().slice(0, 10);
+  return toLocalDateString(monday);
 }
 
 export interface PruneResult {
@@ -304,8 +332,13 @@ export async function pruneOldLogs(): Promise<PruneResult> {
   const db = await getDb();
   const cutoffIso = new Date(Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
-  const oldRows = await db.getAllAsync<{ timestamp: string; action_taken: string; snooze_count: number }>(
-    'SELECT timestamp, action_taken, snooze_count FROM reminder_logs WHERE timestamp < ? ORDER BY timestamp ASC',
+  const oldRows = await db.getAllAsync<{
+    timestamp: string;
+    action_taken: string;
+    snooze_count: number;
+    is_debug: number;
+  }>(
+    'SELECT timestamp, action_taken, snooze_count, is_debug FROM reminder_logs WHERE timestamp < ? ORDER BY timestamp ASC',
     [cutoffIso]
   );
 
@@ -319,6 +352,11 @@ export async function pruneOldLogs(): Promise<PruneResult> {
   >();
 
   for (const row of oldRows) {
+    // Synthetic rows are purged along with everything else past retention,
+    // but never rolled into the real weekly totals — see is_debug above.
+    if (row.is_debug) {
+      continue;
+    }
     const weekStart = mondayOfWeek(row.timestamp);
     const bucket = byWeek.get(weekStart) ?? { done: 0, snoozed: 0, skipped: 0, ignored: 0 };
     if (row.action_taken === 'done') bucket.done += 1;
@@ -361,9 +399,12 @@ export async function pruneOldLogs(): Promise<PruneResult> {
 
 const FAKE_ACTIONS: ReminderActionTaken[] = ['done', 'done', 'skipped', 'ignored', 'done'];
 
-/** [DEBUG-ONLY] Inserts synthetic rows spread over the last few days, for
- * exercising the Summary screen and streak logic without waiting for real
- * 30-minute cycles. Logs a summary of what it inserted to the console so
+/** [DEBUG-ONLY] Inserts synthetic rows (flagged is_debug=1) spread over the
+ * last few days, for exercising the Summary screen's rendering without
+ * waiting for real 30-minute cycles. Flagged rows are excluded from every
+ * real-facing query (today/week counts, streak, CSV export) — see is_debug
+ * filters above — so this can never inflate what she actually sees. Logs a
+ * summary of what it inserted to the console so
  * the result is predictable to check against. */
 export async function insertFakeLogEntries(count: number): Promise<void> {
   const db = await getDb();
@@ -377,8 +418,8 @@ export async function insertFakeLogEntries(count: number): Promise<void> {
 
     await db.runAsync(
       `INSERT INTO reminder_logs
-         (timestamp, trigger_type, action_taken, snooze_count, response_time_sec, session_duration_min, message_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+         (timestamp, trigger_type, action_taken, snooze_count, response_time_sec, session_duration_min, message_id, is_debug)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         timestamp,
         TRIGGER_TYPE_30MIN_CONTINUOUS_USE,
@@ -391,5 +432,5 @@ export async function insertFakeLogEntries(count: number): Promise<void> {
     );
   }
 
-  console.log(`[MomMove:db] inserted ${count} fake log entries`);
+  console.log(`[MomMove:db] inserted ${count} fake log entries (flagged is_debug, excluded from her real Summary/streak/export)`);
 }
