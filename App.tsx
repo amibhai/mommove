@@ -1,6 +1,6 @@
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, AppStateStatus, Text } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -12,7 +12,7 @@ import SettingsScreen from './src/screens/SettingsScreen';
 import SummaryScreen from './src/screens/SummaryScreen';
 import { requestNotificationPermission } from './src/services/notifications';
 import { getIsPausedToday } from './src/services/preferencesStore';
-import { startScreenTimeTracking } from './src/services/screenTimeTracker';
+import { startScreenTimeTracking, stopScreenTimeTracking } from './src/services/screenTimeTracker';
 import { checkForUpdate } from './src/services/updateChecker';
 
 type Stage = 'onboarding' | 'ready';
@@ -32,10 +32,44 @@ export default function App() {
     ScreenTracker.hasUsageAccessPermission() ? 'ready' : 'onboarding'
   );
 
+  // Guards requestNotificationPermission() to fire exactly once per app
+  // session, from whichever path reaches 'ready' first — see the effect
+  // below. Without this, denying the dialog once during normal onboarding
+  // could immediately re-trigger it a second time back-to-back (Android
+  // only stops re-prompting after a *second* denial), which reads as a
+  // broken double-prompt rather than the intended single ask.
+  const notificationPermissionHandledRef = useRef(false);
+
   useEffect(() => {
     if (stage === 'ready') {
       startScreenTimeTracking();
+      // Covers the case where the app starts *directly* in 'ready' — Usage
+      // Access can already be granted at cold start (e.g. it can survive an
+      // uninstall/reinstall on some Android versions), which would skip
+      // PermissionOnboardingScreen's "Continue" handler entirely and, before
+      // this, meant notification permission was never requested at all.
+      if (!notificationPermissionHandledRef.current) {
+        notificationPermissionHandledRef.current = true;
+        requestNotificationPermission();
+      }
     }
+  }, [stage]);
+
+  useEffect(() => {
+    // Usage Access can be revoked without her ever opening MomMove — Android
+    // sometimes does this on its own after long inactivity, or she could
+    // turn it off by accident while poking around Settings. There's no
+    // push notification for that, so the only reliable place to notice is
+    // right when the app comes back to the foreground. If it's gone, drop
+    // back to the same onboarding screen used on first launch — a calm,
+    // already-built re-prompt — rather than continuing to "track" nothing.
+    const subscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      if (nextState === 'active' && stage === 'ready' && !ScreenTracker.hasUsageAccessPermission()) {
+        stopScreenTimeTracking();
+        setStage('onboarding');
+      }
+    });
+    return () => subscription.remove();
   }, [stage]);
 
   useEffect(() => {
@@ -82,6 +116,7 @@ export default function App() {
   }, []);
 
   const handlePermissionGranted = useCallback(async () => {
+    notificationPermissionHandledRef.current = true;
     await requestNotificationPermission();
     setStage('ready');
   }, []);
@@ -99,7 +134,7 @@ export default function App() {
             tabBarActiveTintColor: '#FFFFFF',
             tabBarInactiveTintColor: '#9E92C4',
             tabBarStyle: { backgroundColor: '#241D45', borderTopColor: '#3A2E70' },
-            tabBarLabelStyle: { fontSize: 13, fontWeight: '700' },
+            tabBarLabelStyle: { fontSize: 16, fontWeight: '700' },
           }}
         >
           <Tab.Screen name="Home" component={HomeScreen} options={{ tabBarIcon: tabIcon('🏠') }} />
