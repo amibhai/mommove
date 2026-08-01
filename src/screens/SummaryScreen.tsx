@@ -7,7 +7,6 @@ import {
   StatusBar,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 
@@ -19,18 +18,33 @@ import {
   getTodayCounts,
   getWeeklyRollups,
 } from '../db/database';
-import { exportLogsAsCsv } from '../services/csvExport';
 
 const WEEKDAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_LABELS = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+];
 const BAR_MAX_HEIGHT = 90;
+
+/** Parses a "YYYY-MM-DD" label as a local date. `new Date("YYYY-MM-DD")`
+ * parses as UTC midnight per spec, which can roll .getDay()/.getDate() etc.
+ * back a calendar day in any timezone behind UTC — the 3-arg constructor
+ * below is always local, avoiding that entirely. */
+function parseLocalDate(isoDate: string): Date {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
+/** "2026-07-21" -> "Jul 21, 2026" — friendlier than a raw ISO date for her. */
+function formatWeekOf(isoDate: string): string {
+  const d = parseLocalDate(isoDate);
+  return `${MONTH_LABELS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
 
 export default function SummaryScreen() {
   const [loading, setLoading] = useState(true);
   const [today, setToday] = useState<DailyCounts | null>(null);
   const [week, setWeek] = useState<DayDoneCount[]>([]);
   const [olderWeeks, setOlderWeeks] = useState<WeeklyRollupRow[]>([]);
-  const [exporting, setExporting] = useState(false);
-  const [exportError, setExportError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -53,18 +67,6 @@ export default function SummaryScreen() {
       load();
     }, [load])
   );
-
-  const handleExport = useCallback(async () => {
-    setExporting(true);
-    setExportError(null);
-    try {
-      await exportLogsAsCsv();
-    } catch (err) {
-      setExportError(err instanceof Error ? err.message : 'Export failed.');
-    } finally {
-      setExporting(false);
-    }
-  }, []);
 
   const maxDoneInWeek = Math.max(1, ...week.map((d) => d.doneCount));
 
@@ -95,7 +97,7 @@ export default function SummaryScreen() {
                 {week.map((day) => {
                   const barHeight =
                     day.doneCount === 0 ? 4 : (day.doneCount / maxDoneInWeek) * BAR_MAX_HEIGHT;
-                  const weekday = WEEKDAY_LABELS[new Date(day.date).getDay()];
+                  const weekday = WEEKDAY_LABELS[parseLocalDate(day.date).getDay()];
                   return (
                     <View key={day.date} style={styles.dayColumn}>
                       <Text style={styles.dayCount}>{day.doneCount}</Text>
@@ -111,29 +113,15 @@ export default function SummaryScreen() {
 
             {olderWeeks.length > 0 ? (
               <View style={styles.section}>
-                <Text style={styles.sectionLabel}>Older weeks (rolled up)</Text>
+                <Text style={styles.sectionLabel}>Older weeks</Text>
                 {olderWeeks.map((w) => (
                   <Text key={w.weekStartDate} style={styles.rollupLine}>
-                    Week of {w.weekStartDate}: {w.doneCount} done, {w.snoozedCount} snoozed,{' '}
-                    {w.skippedCount} skipped, {w.ignoredCount} ignored
+                    Week of {formatWeekOf(w.weekStartDate)}: {w.doneCount} done,{' '}
+                    {w.snoozedCount} snoozed, {w.skippedCount} skipped, {w.ignoredCount} ignored
                   </Text>
                 ))}
               </View>
             ) : null}
-
-            <View style={styles.section}>
-              <TouchableOpacity
-                style={styles.exportButton}
-                onPress={handleExport}
-                disabled={exporting}
-                accessibilityRole="button"
-              >
-                <Text style={styles.exportButtonText}>
-                  {exporting ? 'Exporting…' : 'Export Logs (CSV)'}
-                </Text>
-              </TouchableOpacity>
-              {exportError ? <Text style={styles.exportError}>{exportError}</Text> : null}
-            </View>
           </>
         )}
       </ScrollView>
@@ -163,7 +151,7 @@ const styles = StyleSheet.create({
     marginBottom: 32,
   },
   sectionLabel: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '700',
     color: '#B7A9FF',
     letterSpacing: 1,
@@ -188,10 +176,10 @@ const styles = StyleSheet.create({
   },
   dayColumn: {
     alignItems: 'center',
-    width: 40,
+    width: 44,
   },
   dayCount: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
     color: '#FFFFFF',
     marginBottom: 4,
@@ -207,32 +195,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#7C5CFC',
   },
   dayLabel: {
-    fontSize: 13,
+    fontSize: 16,
     fontWeight: '600',
     color: '#B7A9FF',
     marginTop: 6,
   },
   rollupLine: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '500',
     color: '#E6E1FF',
     marginBottom: 6,
-  },
-  exportButton: {
-    backgroundColor: '#3A2E70',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  exportButtonText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  exportError: {
-    marginTop: 8,
-    fontSize: 13,
-    color: '#FF8080',
   },
 });
