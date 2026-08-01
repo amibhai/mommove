@@ -1,5 +1,4 @@
 import Constants from 'expo-constants';
-import * as Updates from 'expo-updates';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   SafeAreaView,
@@ -283,14 +282,6 @@ export default function SettingsScreen() {
               MomMove v{Constants.expoConfig?.version ?? '1.0.0'}
             </Text>
           </TouchableOpacity>
-          <Text style={styles.aboutDetail}>
-            OTA update channel: {Updates.channel ?? 'not configured'}
-          </Text>
-          <Text style={styles.aboutDetail}>
-            {Updates.isEmbeddedLaunch
-              ? 'Running the build’s original code (no OTA update applied yet)'
-              : `Running OTA update ${Updates.updateId?.slice(0, 8) ?? 'unknown'}`}
-          </Text>
           <TouchableOpacity
             style={styles.checkUpdateButton}
             onPress={handleCheckForUpdates}
@@ -395,13 +386,6 @@ const styles = StyleSheet.create({
     minHeight: 44,
     paddingVertical: 12,
   },
-  aboutDetail: {
-    textAlign: 'center',
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#7A6FB0',
-    marginBottom: 4,
-  },
   checkUpdateButton: {
     marginTop: 12,
     minHeight: 44,
@@ -419,7 +403,7 @@ const styles = StyleSheet.create({
   aboutFeedback: {
     marginTop: 10,
     textAlign: 'center',
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '600',
     color: '#E6E1FF',
   },
