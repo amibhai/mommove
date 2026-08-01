@@ -49,9 +49,17 @@ const ACTION_TAKEN_BY_RESOLUTION: Record<ReminderResolution, ReminderActionTaken
  * trigger). Writes one row to reminder_logs, then checks whether the
  * fresh streak (computed from the database, not a separately-maintained
  * counter) just crossed a reinforcement milestone.
+ *
+ * `isDebug` (default false) is for Developer Tools' "Simulate Done"/
+ * "Simulate Skip" only — real notification-action resolutions never pass
+ * it, so they always land as real rows. See database.ts's is_debug column.
  */
-export async function onReminderResolved(resolution: ReminderResolution): Promise<void> {
-  console.log(`${LOG_PREFIX} onReminderResolved('${resolution}')`);
+export async function onReminderResolved(
+  resolution: ReminderResolution,
+  options?: { isDebug?: boolean }
+): Promise<void> {
+  const isDebug = options?.isDebug ?? false;
+  console.log(`${LOG_PREFIX} onReminderResolved('${resolution}'${isDebug ? ', isDebug' : ''})`);
 
   const firedAtMs = getTriggerFiredAtMs();
   const resolvedAtMs = Date.now();
@@ -64,6 +72,7 @@ export async function onReminderResolved(resolution: ReminderResolution): Promis
     responseTimeSec: firedAtMs !== null ? Math.round((resolvedAtMs - firedAtMs) / 1000) : null,
     sessionDurationMin: getTriggerSessionDurationMin(),
     messageId: getLastShownMessageId(),
+    isDebug,
   });
   clearTriggerFiredState();
 
