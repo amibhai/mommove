@@ -1,6 +1,6 @@
 import { useFocusEffect } from '@react-navigation/native';
 import React, { useCallback, useState } from 'react';
-import { SafeAreaView, StatusBar, StyleSheet, Text, View } from 'react-native';
+import { Linking, SafeAreaView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import ReinforcementBanner from '../components/ReinforcementBanner';
 import UpdateBanner from '../components/UpdateBanner';
@@ -71,8 +71,15 @@ export default function HomeScreen() {
         ) : (
           <View style={[styles.statusPill, styles.statusPillWarning]}>
             <Text style={styles.statusText}>
-              Notifications are off — turn them on in Android Settings to see reminders.
+              Notifications are off — turn them on to see reminders.
             </Text>
+            <TouchableOpacity
+              style={styles.settingsButton}
+              onPress={() => Linking.openSettings().catch(() => {})}
+              accessibilityRole="button"
+            >
+              <Text style={styles.settingsButtonText}>Open Settings</Text>
+            </TouchableOpacity>
           </View>
         )}
       </View>
@@ -115,5 +122,19 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
     textAlign: 'center',
+  },
+  settingsButton: {
+    marginTop: 14,
+    minHeight: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  settingsButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 });
