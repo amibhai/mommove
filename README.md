@@ -38,14 +38,22 @@ no Expo account and no EAS cloud build.
 npm install
 npx expo prebuild --platform android   # only needed the first time, or after changing app.json/native deps
 cd android
-./gradlew assembleDebug                # fast, unminified, unsigned-for-you (uses the debug keystore) — good for day-to-day sideloading
-# or:
-./gradlew assembleRelease               # optimized build, still signed with the debug keystore by default (see build.gradle) since there's no Play Store submission involved
+./gradlew assembleRelease               # standalone: JS bundle is baked into the APK, no dev machine/server needed to run it. Signed with the debug keystore by default (see build.gradle) since there's no Play Store submission involved.
 ```
 
-The resulting APK is at `android/app/build/outputs/apk/debug/app-debug.apk`
-(or `.../release/app-release.apk`) — copy it to your phone the same way as
-described below.
+The resulting APK is at `android/app/build/outputs/apk/release/app-release.apk`
+— copy it to your phone the same way as described below.
+
+**Use `assembleRelease`, not `assembleDebug`, for anything you actually
+install and run standalone.** The React Native Gradle plugin's default
+`debuggableVariants` list is just `["debug"]` (see the commented-out block
+in `android/app/build.gradle`) — for exactly that variant, it *skips*
+bundling the JS/assets into the APK entirely and expects a Metro dev server
+reachable at runtime instead. That's correct for active development
+(fast iteration, hot reload) but means an `assembleDebug` APK installed on
+a phone with no dev server around will fail to load at all. `assembleRelease`
+isn't in that list, so it bundles the JS statically — the app is then fully
+self-contained, no computer/WiFi dependency after install.
 
 Notes if you hit issues:
 - `gradlew` invokes `node` as part of the build (for Metro bundling and Expo
@@ -668,6 +676,75 @@ none visible from casual use, all worth knowing about:
   through the shared real notification-resolution pipeline for a benefit
   that only matters if you (never her) resolve a self-fired test
   notification.
+
+## Field fix: no reminders ever fired (tracking died after one tick)
+
+Installed on a real phone, MomMove tracked nothing and never sent a single
+reminder — the continuous-time readout in Developer Tools sat at `00:00`
+and the persistent "MomMove is watching your screen time" notification
+vanished a moment after launch.
+
+**Root cause, in `ScreenTrackerService`:** React Native's
+`HeadlessJsTaskService` calls `stopSelf()` from `onHeadlessJsTaskFinish()`
+as soon as the last task it started finishes. That's the right behaviour
+for the pattern it's written for — one service start, one short task, done
+— but this service is not that shape: it *is* the tracker. It owns the
+persistent notification, the screen-state receiver, and the repeating
+15-second tick. So the sequence was: start service → first tick runs →
+JS task resolves in milliseconds → base class stops the service →
+`onDestroy()` removes the tick callbacks and unregisters the receiver.
+Tracking was over roughly one second after it began, permanently, and
+because `stopSelf()` also cancels the `START_STICKY` restart, nothing ever
+brought it back.
+
+The fix is three small changes in that one file:
+
+- `onHeadlessJsTaskFinish()` is overridden to do nothing — deliberately no
+  `super` call, so a finished tick never tears the service down. The
+  service's lifetime is owned by `startTracking()`/`stopTracking()` alone.
+- Ticks now start via `HeadlessJsTaskContext.getInstance(context)
+  .startTask(...)` directly, rather than the base class's `startTask()`.
+  That base method acquires a `PARTIAL_WAKE_LOCK` it only releases in
+  `onDestroy()` — harmless when the service died after every tick, but a
+  permanently held wake lock (i.e. real battery drain) now that it lives
+  as long as tracking is on. The base method is still used for the one
+  case it's needed: when there's no React context yet, because the system
+  restarted the process itself.
+- The tick body is wrapped in a `try`/`catch` that logs and carries on.
+  An exception escaping onto the main looper crashes the process, which
+  would put us right back at "tracking silently stopped forever" — the
+  exact failure mode being fixed here.
+
+Two related fixes elsewhere, found while tracing the same path:
+
+- **Long tick gaps were credited as screen-on time
+  (`src/services/screenTimeTracker.ts`).** The tick loop is a main-looper
+  `Handler`, which stops firing while the device is asleep — and the device
+  sleeps precisely when the screen is off. A phone left alone overnight
+  therefore resumes ticking with `elapsedSec` covering the whole night, and
+  credited all of it the instant she picked the phone up: threshold
+  crossed, reminder fired immediately, for a "session" that never happened.
+  Each tick now credits at most the time since the screen's last on/off
+  transition, which is the hard ceiling on how much screen-on time can
+  actually have elapsed.
+- **`registerReceiver` without an export flag.** Context-registered
+  receivers require `RECEIVER_EXPORTED`/`RECEIVER_NOT_EXPORTED` once
+  `targetSdk >= 34` (this app targets 36). A filter of purely protected
+  system broadcasts like ours is exempt, so this wasn't crashing — but the
+  exemption is a detail of the framework's implementation to be leaning on
+  for something this load-bearing, and `RECEIVER_NOT_EXPORTED` is what we
+  actually mean.
+
+**Confirming it's fixed on-device:** the persistent notification should
+stay in the shade for as long as tracking is on (it used to disappear
+within a second or two), and `adb logcat | grep MomMove` should print a
+`[MomMove:tracker] screen ON ...` line every 15 seconds with
+`continuousTime` climbing. For a fast end-to-end check, set **Settings →
+Remind me after** to its 15-minute minimum rather than waiting out the
+30-minute default, and make sure the current time is inside the active
+hours window (8:00–21:00 by default) — Developer Tools' **Suppression**
+readout says `quiet-hours` when it isn't, which looks identical to "broken"
+from the outside.
 
 ## On-device test protocols (Phases 2–8)
 
