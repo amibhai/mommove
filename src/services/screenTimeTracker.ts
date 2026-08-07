@@ -65,9 +65,20 @@ async function tick(): Promise<void> {
   const { isScreenOn, msSinceTransition } = ScreenTracker.getScreenState();
 
   if (isScreenOn) {
-    continuousTimeSec += elapsedSec;
+    // The gap between two ticks is not necessarily screen-on time. The tick
+    // loop is a main-looper Handler, which stops firing while the device is
+    // asleep — and the device sleeps precisely when the screen is off. So a
+    // phone left alone overnight resumes ticking with `elapsedSec` covering
+    // the whole night, and would credit all of it the instant she picks the
+    // phone up, firing a reminder immediately. The screen has only been on
+    // since its last transition, so that's the hard ceiling on what this
+    // tick may add.
+    const creditedSec = Math.min(elapsedSec, msSinceTransition / 1000);
+    continuousTimeSec += creditedSec;
     console.log(
-      `${LOG_PREFIX} screen ON (+${elapsedSec.toFixed(1)}s) -> continuousTime=${continuousTimeSec.toFixed(1)}s`
+      `${LOG_PREFIX} screen ON (+${creditedSec.toFixed(1)}s${
+        creditedSec < elapsedSec ? `, clamped from ${elapsedSec.toFixed(1)}s` : ''
+      }) -> continuousTime=${continuousTimeSec.toFixed(1)}s`
     );
   } else {
     const offMinutes = msSinceTransition / 60_000;
