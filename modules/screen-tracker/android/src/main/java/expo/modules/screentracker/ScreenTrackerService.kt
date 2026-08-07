@@ -9,10 +9,13 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.facebook.react.HeadlessJsTaskService
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.jstasks.HeadlessJsTaskConfig
+import com.facebook.react.jstasks.HeadlessJsTaskContext
 
 /**
  * Foreground service that keeps MomMove's process (and its JS engine) alive
@@ -37,14 +40,30 @@ class ScreenTrackerService : HeadlessJsTaskService() {
 
   private val tickRunnable = object : Runnable {
     override fun run() {
-      startTrackerTask()
+      try {
+        startTrackerTask()
+      } catch (err: Exception) {
+        // A single bad tick must never take the whole loop down with it —
+        // an exception escaping onto the main looper crashes the process,
+        // and tracking (so every future reminder) along with it. Logged
+        // rather than swallowed: `adb logcat -s MomMove:*` will show it.
+        Log.w(TAG, "tick failed, skipping this one", err)
+      }
       tickHandler.postDelayed(this, tickIntervalMs)
     }
   }
 
   override fun onCreate() {
     super.onCreate()
-    registerReceiver(screenStateReceiver, ScreenStateReceiver.intentFilter())
+    // RECEIVER_NOT_EXPORTED: these are system broadcasts only, so no other
+    // app has any business reaching this receiver. Required (rather than
+    // merely tidy) for context-registered receivers once targetSdk >= 34.
+    ContextCompat.registerReceiver(
+      this,
+      screenStateReceiver,
+      ScreenStateReceiver.intentFilter(),
+      ContextCompat.RECEIVER_NOT_EXPORTED
+    )
     startForeground(NOTIFICATION_ID, buildPersistentNotification())
   }
 
@@ -71,15 +90,44 @@ class ScreenTrackerService : HeadlessJsTaskService() {
 
   override fun onBind(intent: Intent): IBinder? = null
 
+  /**
+   * [HeadlessJsTaskService]'s own implementation calls `stopSelf()` as soon
+   * as the last task it started finishes. That's right for the usual
+   * "one service start = one short task" pattern it's written for, but here
+   * the service *is* the tracker: it owns the persistent notification, the
+   * screen-state receiver and the repeating tick. Letting a 15-second tick
+   * tear all of that down means tracking stops dead right after the very
+   * first tick — and with it, every reminder that would ever have fired.
+   *
+   * So this deliberately does not call super, and never stops the service.
+   * Its lifetime is owned by startTracking()/stopTracking() instead.
+   */
+  override fun onHeadlessJsTaskFinish(taskId: Int): Unit = Unit
+
   private fun startTrackerTask() {
-    startTask(
-      HeadlessJsTaskConfig(
-        HEADLESS_TASK_NAME,
-        Arguments.createMap(),
-        TASK_TIMEOUT_MS,
-        /* allowedInForeground = */ true
-      )
+    val taskConfig = HeadlessJsTaskConfig(
+      HEADLESS_TASK_NAME,
+      Arguments.createMap(),
+      TASK_TIMEOUT_MS,
+      /* allowedInForeground = */ true
     )
+
+    val context = reactContext
+    if (context == null) {
+      // No React context yet — the process was restarted by the system
+      // (START_STICKY) rather than by the app itself. The base class knows
+      // how to boot one up and run the task once it's ready.
+      startTask(taskConfig)
+      return
+    }
+
+    // Steady state. Deliberately *not* via HeadlessJsTaskService.startTask(),
+    // which acquires a partial wake lock it only ever releases in onDestroy()
+    // — and this service, per the override above, is never destroyed between
+    // ticks. Holding the CPU awake around the clock is exactly the kind of
+    // battery drain that gets an app like this uninstalled; the ticks that
+    // matter happen while the screen (and therefore the CPU) is already on.
+    HeadlessJsTaskContext.getInstance(context).startTask(taskConfig)
   }
 
   private fun buildPersistentNotification(): android.app.Notification {
@@ -122,6 +170,7 @@ class ScreenTrackerService : HeadlessJsTaskService() {
   }
 
   companion object {
+    private const val TAG = "MomMove:service"
     private const val NOTIFICATION_ID = 4471
     private const val FOREGROUND_CHANNEL_ID = "mommove-screen-tracking"
     private const val HEADLESS_TASK_NAME = "ScreenTimeTrackerTask"
